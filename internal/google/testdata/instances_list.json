@@ -1,0 +1,140 @@
+{
+    "id": "",
+    "items": [
+        {
+            "id": "",
+            "creationTimestamp": "",
+            "name": "ym-vm-x-1",
+            "description": "",
+            "tags": {
+                "items": [
+                    "tag1"
+                ],
+                "fingerprint": ""
+            },
+            "machineType": "/n1-standard-1",
+            "status": "RUNNING",
+            "statusMessage": "",
+            "zone": "",
+            "canIpForward": false,
+            "networkInterfaces": [
+                {
+                    "network": "",
+                    "subnetwork": "",
+                    "networkIP": "0.0.0.0",
+                    "name": "",
+                    "accessConfigs": [
+                        {
+                            "type": "ONE_TO_ONE_NAT",
+                            "name": "",
+                            "natIP": "0.0.0.1",
+                            "setPublicPtr": false,
+                            "publicPtrDomainName": "",
+                            "networkTier": "PREMIUM",
+                            "kind": ""
+                        }
+                    ],
+                    "aliasIpRanges": [
+                        {
+                            "ipCidrRange": "",
+                            "subnetworkRangeName": ""
+                        }
+                    ],
+                    "fingerprint": "",
+                    "kind": ""
+                }
+            ],
+            "disks": [
+                {
+                    "type": "PERSISTENT",
+                    "mode": "READ_WRITE",
+                    "source": "",
+                    "deviceName": "",
+                    "index": 1,
+                    "boot": false,
+                    "diskSizeGb": "100",
+                    "autoDelete": false,
+                    "licenses": [
+                        ""
+                    ],
+                    "interface": "SCSI",
+                    "diskEncryptionKey": {
+                        "rawKey": "",
+                        "kmsKeyName": "",
+                        "sha256": ""
+                    },
+                    "kind": ""
+                }
+            ],
+            "metadata": {
+                "fingerprint": "",
+                "items": [
+                    {
+                        "key": "",
+                        "value": ""
+                    }
+                ],
+                "kind": ""
+            },
+            "serviceAccounts": [
+                {
+                    "email": "",
+                    "scopes": [
+                        ""
+                    ]
+                }
+            ],
+            "selfLink": "",
+            "scheduling": {
+                "onHostMaintenance": "MIGRATE",
+                "automaticRestart": false,
+                "preemptible": false
+            },
+            "cpuPlatform": "",
+            "labels": {},
+            "labelFingerprint": "",
+            "minCpuPlatform": "",
+            "guestAccelerators": [
+                {
+                    "acceleratorType": "x/y",
+                    "acceleratorCount": 1
+                }
+            ],
+            "startRestricted": false,
+            "deletionProtection": false,
+            "reservationAffinity": {
+                "consumeReservationType": "ANY_RESERVATION",
+                "key": "",
+                "values": [
+                    ""
+                ]
+            },
+            "hostname": "",
+            "displayDevice": {
+                "enableDisplay": false
+            },
+            "shieldedInstanceConfig": {
+                "enableSecureBoot": false,
+                "enableVtpm": false,
+                "enableIntegrityMonitoring": false
+            },
+            "shieldedInstanceIntegrityPolicy": {
+                "updateAutoLearnPolicy": false
+            },
+            "kind": ""
+        }
+    ],
+    "nextPageToken": "",
+    "selfLink": "",
+    "warning": {
+        "code": "NO_RESULTS_ON_PAGE",
+        "message": "",
+        "data": [
+            {
+                "key": "",
+                "value": ""
+            }
+        ]
+    },
+    "kind": ""
+}

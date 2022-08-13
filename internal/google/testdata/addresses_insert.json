@@ -1,0 +1,21 @@
+{
+    "id": "",
+    "creationTimestamp": "",
+    "name": "ym-ip-1",
+    "description": "",
+    "address": "0.0.0.0",
+    "prefixLength": 1,
+    "status": "PENDING",
+    "region": "",
+    "selfLink": "/operations/1",
+    "users": [
+        ""
+    ],
+    "networkTier": "",
+    "ipVersion": "IPV4",
+    "addressType": "INTERNAL",
+    "purpose": "",
+    "subnetwork": "",
+    "network": "",
+    "kind": ""
+}

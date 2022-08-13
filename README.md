@@ -1,121 +1,219 @@
 # yeoman
 
-yeoman is an alternative to k8s and Nomad. It aims to be:
+yeoman is the lazy man's orchestrator.
 
-1. Simple. Easy to run and understand conceptually from start to finish.
-2. Safe. Low-level infrastructure shouldn't be exciting. We write simple code
-   that's secure, always safe to upgrade, and offers a LTS release cadence.
-3. Batteries included. Everything you need to run highly available, flexible
-   architectures at scale.
+It's a cloud-only, container-based alternative to k8s, Nomad, and fly that's:
 
-These are the trade-offs we make to achieve the aforementioned goals:
+1. **Simple.** Easy to run and understand conceptually from start to finish.
+2. **Safe.** Low-level infrastructure shouldn't be exciting. We write as little
+   code as possible and make it easy to upgrade while running services.
+3. **Secure.** We piggyback on cloud-based IAM to remove trust from the
+   equation and make hardened OS and container images the default.
 
-1. Convention over configuration. There's very few options or ways of doing
-   things. You should do things the "Yeoman" way or otherwise use k8s/Nomad.
+After seven years of managing infrastructure with services used by millions of
+people, yeoman represents the sum of all of my learnings. It's the developer
+experience I've longed for ever since Heroku was left to rot on the vine.
+
+I hope you love it.
+
 
 ## Project status
 
-This is in an extremely early "ideation" stage, well before pre-alpha. It's not
-usable yet, and you shouldn't try.
+This is in an early "pre-alpha" stage. It's usable, but hasn't been tested in
+production. Use at your own risk.
 
-## Goals
+Note that only Google Cloud Platform is supported today. Others can be added.
+Scratch your itch, submit a PR.
 
-* Runs on Google Cloud, but extensible to others. Utilizes Google's
-  Container-Optimized OS. 
-* Runs on any UNIX-like OS. OpenBSD is a first-class citizen with `pledge` and
-  `unveil` built in.
 
-## State management
+## Architecture
 
-Whereever possible, state is discovered, not stored. This makes it impossible
-for the state to go out-of-sync.
+yeoman's server is your control plane. It is isolated from the rest of your
+infrastructure, so if yeoman's server goes down, all of your services are
+unaffected.
 
-Public state, such as the services that should be running and the count for
-each of them, is held in a Google Cloud bucket called `yeoman`.
+The server tracks two forms of state:
 
-Private state, such as secrets for your application, are stored in Google
-Cloud's Secrets Manager.
+* The desired state:
+	* Which services should be running
+	* What type of VMs to use
+* The current state:
+	* What services are running
+	* Which VMs actually exist
 
-## Non-features
+yeoman's server makes adjustments to your infrastructure as needed to bring the
+current state in line with the desired state.
 
-These are features we'll avoid.
+The services that should be running and their configurations are persisted to a
+Google Bucket that you define. Each object in the bucket represents one
+service.
 
-* Raft / distributed consensus. We'll rethink the architecture such that this
-  design is no longer needed and systems can remain simple.
-* Critical-path control-plane. The yeoman control plane should be entirely
-  removed from the running of services. If yeoman goes down, nothing should be
-  affected.
-* Agents running on infra.
+To deploy, the yeoman client creates or updates a service object in this
+bucket. You can thus control access to deploying services using Google's ACL
+controls on objects in the bucket: restricting writes on a service file to a
+person would prevent them from deploying that service.
 
-## Components
+The server recognizes when a service object in the bucket has changed and makes
+any needed adjustments automatically.
 
-* Yeoman itself. This runs as a single binary on a server.
-* A reverse proxy and service mesh: @proxy
+When deploying an update to a service, yeoman will automatically do a highly
+available rolling deploy. If the machine specs have not been changed, yeoman
+will issue rolling restarts and confirm the service is healthy before
+continuing to the next batch. If the machine specs have been changed, yeoman
+will do a blue-green deploy: it spins up new boxes, confirms the service
+reports healthy on each box, and then shuts down the old.
 
-That's it!
+If anything goes wrong during a deploy, yeoman halts the deploy immediately.
+You can fix the issue and redeploy to have yeoman try again.
+
+Each time yeoman creates a VM, yeoman numbers the VM neatly. For example, if
+you deploy a service named `dashboard` in triplicate, the VMs will be named
+`ym-dashboard-1`, `ym-dashboard-2` and `ym-dashboard-3`. VMs run [Google's
+Container-Optimized
+OS](https://cloud.google.com/container-optimized-os/docs/concepts/features-and-benefits)
+which has strong security guarantees.
+
+VMs are discovered automatically by polling GCP's API. yeoman ignores any VMs
+which do not have the prefix `ym-` and thus it is safe to run alongside other
+orchestrators or unmanaged VMs.
+
+OCI-compatible containers are built using [Google's minimal distroless
+images](https://github.com/GoogleContainerTools/distroless), and yeoman selects
+the correct image for the type of app you're deploying. Anything in the
+directory with the same name as the service will be bundled into the container
+image and pushed to Google's Artifact Registry.
+
+All services that yeoman runs must:
+* Connect an HTTP server to port 3000 and respond with `200 OK` to `/health`
+  checks.
+* Connect to port 3001 if listening directly on TLS.
+
+yeoman works best with the included reverse proxy which also polls GCP's API
+and makes each service available with TLS automatically. For more info on this,
+see the [proxy
+readme](https://github.com/thankful-ai/yeoman/blob/master/cmd/proxy).
+
+It's good practice to keep secrets out of your images. We recommend using
+`gcloud secrets` and configure your app to retrieve the secrets in-memory on
+boot.
+
 
 ## Getting started
 
-yeoman's core goal is simplicity, and that carries through to its CLI.
+### GCP
 
-* `yeoman init $yeomanIP`:
-	* Provide the IP address of the Yeoman service, which all other
-	  commands will use.
-	* This creates or modifies a `.yeoman.json` file in your current
-	  directory.
-* `yeoman service create|update|destroy $name`
-	* `yeoman -n 3:5 -c $containerName service create $name`:
-		* `-n` is the number to run with replication. This is in the
-		  form of `min:max` for autoscaling. To disable autoscaling,
-		  use a single number, e.g. `-n 3`.
-		* `-c` is the container to use.
-		* `$name` should include the environment. Good practice is to
-		  always append `-$env`, e.g. `dashboard-production` and
-		  `dashboard-staging`.
-	* `yeoman -n 3:10 -c $containerName2 service update $name`
-	* `yeoman service destroy $name`
-* `yeoman deploy $serviceName`:
-	* Adds a service if one doesn't exist, so yeoman will start tracking
-	  it.
-	* Scales up or down the infra as needed according to the settings.
-	* Deploys the latest container.
-	* Waits for the service to come online and checks health on the new
-	  version.
-	* If everything is successful, brings down the old version.
-	* If everything is not successful, brings down the new version. 
-	* `$appName` may include the environment, e.g. `dashboard-staging`.
-* `yeoman status [$serviceName]`:
-	* See yeoman's current view of the world. Which services it's managing,
-	  how many exist, what boxes they're hosted on, what IPs they're
-	  available through, and their current health.
+* Install `gcloud` and run `gcloud auth application-default login`.
+* Create the `yeoman` service agent with the following roles:
+	* Editor
+	* Artifact Registry Reader
+	* Compute Instance Admin (beta)
+	* Secret Manager Secret Accessor
+* Create 2 separate Google Buckets, each one for your:
+	*  TLS certs
+	*  Service definition files
 
-Since we use Google Cloud secrets, you should manage secrets using `gcloud
-secrets` or the web-based UI.
+### Setup the yeoman server
 
-## Advanced commands
+* Run `yeoman init`. Fill in the initial setup questions.
+* This will spin up a
+  ~$7/mo VM which runs the yeoman server
+  for you. Each time you want to update the yeoman server, you'll re-run this
+  command which will safely delete the existing `yeoman` server and create
+  another.
 
-* `yeoman clone '*-staging' '$1-qa'`
-	* Create a duplicate environment instantly for any services matching
-	  the name in question.
+### Deploy a proxy and a service
 
-## Health checks and auto-scaling
+* Install go1.20 or later, then run
+  `go install github.com/thankful-ai/yeoman/cmd/yeoman@latest`
+* Configure your `yeoman.json` file and one or more app folders which will
+  each contain the files you want to copy into your image and `app.json`.
+* If you haven't yet, run: `yeoman init` (only need to do this when you want to
+  update the yeoman server)
+* Run: `yeoman -count 3 -static-ip -http deploy proxy`
+* Run: `yeoman -count 3 -machine n2-standard -disk 100 deploy someservice`
 
-* Each service must implement a healthcheck endpoint:
-	* `/health`: respond with 200 OK and a body containing:
-		`{"load": 0.3}`, which is what percentage of load the server is
-		currently handling. This can be determined by any metric of
-		your choosing: HTTP request, "expensive" HTTP requests, etc.
-* Services will be scaled up when half of the servers report 0.7 load or
-  higher.
-* Services will be scaled down when half of the servers report 0.3 load or
-  lower.
-* Moving averages are calculated over a 60s period, with measurements taken
-  every 5s.
 
-To disable auto-scaling for a service, configure `-n $constant` rather than a
-range.
+## Files
 
-## About the name
+### yeoman.json
 
-Since this project is intended in many ways to be the oppositite of "Nomad," I
-selected something that connotes that it'll be here a long time.
+When you run `yeoman init`, yeoman will copy the `yeoman.json` file into
+your container and use that as its configuration settings.
+
+Example file:
+
+```json
+{
+    "log": {
+        "format": "json",
+        "level": "debug"
+    },
+    "store": "$bucketName",
+    "providerRegistries": [
+        {
+            "provider": "gcp:$projectName:us-central1:us-central1-b",
+            "registry": "us-central1-docker.pkg.dev/$projectName/$registryName",
+            "serviceAccount": "yeoman@$projectName.iam.gserviceaccount.com"
+        }
+    ]
+}
+```
+
+### app.json
+
+When you run `yeoman service deploy foobar`, yeoman looks for the file
+`foobar/app.json`. It will use this to build a container image and push the
+image to each of the registries you've defined in `yeoman.json`.
+
+There are two keys, `type` and `cmd`. `type` must be one of the following:
+
+* go
+* cgo
+* python3
+* java
+* rust
+* d
+* node
+
+`cmd` is equivalent to the Dockerfile `CMD` instruction and can be copied
+verbatim.
+
+Containers built by yeoman will copy everything in the named folder into the
+image except for this file, which is used to build the image.
+
+```json
+{
+	"type": "go",
+	"cmd": ["/app/foobar", "-x", "some-opt"]
+}
+```
+
+
+## Best Practices
+
+Generally you'll want to create a shell script to handle consistent deployments
+and check that file into your source control. For example, let's make
+`deploy_dashboard.sh`:
+
+```
+#!/usr/bin/env bash
+set -eu
+
+name=dashboard
+config=$(pwd)/yeoman.json
+tmpdir="/tmp/$name"
+
+mkdir "$tmpdir"
+go build "./cmd/$name" -o "/tmp/$name"
+
+cd /tmp
+yeoman -config "$config" \
+	-count 3 \
+	-static-ip \
+	service deploy "$name"
+rm -r "$tmpdir"
+```
+
+Then you'll simply run `deploy_dashboard.sh` and yeoman will do a zero-downtime
+deploy for you, ensuring that you have (in this example) 3 servers with static
+IPs.
