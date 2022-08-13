@@ -12,6 +12,12 @@ These are the trade-offs we make to achieve the aforementioned goals:
 
 1. Convention over configuration. There's very few options or ways of doing
    things. You should do things the "Yeoman" way or otherwise use k8s/Nomad.
+2. High availability. We'll build a simple server that's easy to bring up,
+   understand, and fix if anything goes wrong. There is only one of them, and it
+   doesn't scale horizontally. This inherently limits the use of yeoman to
+   smaller teams which can organize around brief (< 5 second) outages of yeoman
+   for upgrades. Since yeoman isn't in the critical path, no outages affect
+   production systems.
 
 ## Project status
 
@@ -21,7 +27,7 @@ usable yet, and you shouldn't try.
 ## Goals
 
 * Runs on Google Cloud, but extensible to others. Utilizes Google's
-  Container-Optimized OS. 
+  Container-Optimized OS.
 * Runs on any UNIX-like OS. OpenBSD is a first-class citizen with `pledge` and
   `unveil` built in.
 
@@ -33,8 +39,9 @@ for the state to go out-of-sync.
 Public state, such as the services that should be running and the count for
 each of them, is held in a Google Cloud bucket called `yeoman`.
 
-Private state, such as secrets for your application, are stored in Google
-Cloud's Secrets Manager.
+All state, including services that hould be running and the count for each of
+them, as well as secrets for your application, are stored in Google Cloud's
+Secrets Manager.
 
 ## Non-features
 
@@ -82,7 +89,7 @@ yeoman's core goal is simplicity, and that carries through to its CLI.
 	* Waits for the service to come online and checks health on the new
 	  version.
 	* If everything is successful, brings down the old version.
-	* If everything is not successful, brings down the new version. 
+	* If everything is not successful, brings down the new version.
 	* `$appName` may include the environment, e.g. `dashboard-staging`.
 * `yeoman status [$serviceName]`:
 	* See yeoman's current view of the world. Which services it's managing,
