@@ -3,6 +3,7 @@ package yeoman
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -10,15 +11,32 @@ import (
 )
 
 // Service represents a deployed app across one or more VMs.
+//
+// TODO(egtann) each service should correspond to a single version of a
+// container. New deploys create new services. With this design the autoscaling
+// across versions is solved automatically.
 type Service struct {
-	opts   *ServiceOpts
-	deploy context.Context
-	mu     sync.RWMutex
-	stop   chan chan struct{}
+	opts *ServiceOpts
+
+	terra         *terrafirma.Terrafirma
+	cloudProvider string
+
+	errorReporter Reporter
+
+	mu   sync.RWMutex
+	stop chan chan struct{}
 }
 
-func NewService(opts *ServiceOpts) *Service {
-	return &Service{opts: opts}
+func NewService(
+	terra *terrafirma.Terrafirma,
+	cloudProvider string,
+	opts ServiceOpts,
+) *Service {
+	return &Service{
+		terra:         terra,
+		cloudProvider: cloudProvider,
+		opts:          &opts,
+	}
 }
 
 // ServiceOpts contains the persistant state of a Service, as configured via
@@ -28,6 +46,7 @@ func NewService(opts *ServiceOpts) *Service {
 type ServiceOpts struct {
 	Name      string `json:"name"`
 	Container string `json:"container"`
+	Version   string `json:"version"`
 	Min       int    `json:"min"`
 	Max       int    `json:"max"`
 }
@@ -39,6 +58,7 @@ func (s *Service) CopyOpts() *ServiceOpts {
 	return &ServiceOpts{
 		Name:      s.Name,
 		Container: s.Container,
+		Version:   s.Version,
 		Min:       s.Min,
 		Max:       s.Max,
 	}
@@ -68,20 +88,6 @@ func (s *Service) AverageLoad() float64 {
 	return f / len(s.Loads)
 }
 
-func (s *Service) deploying() bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if s.deploy == nil {
-		return false
-	}
-	deadline, ok := s.deploy.Deadline()
-	if !ok {
-		return false
-	}
-	return time.Now().Before(deadline)
-}
-
 // Start a monitor for each service which when started will pull down the
 // current state for it.
 func (s *Service) Start(ctx context.Context) error {
@@ -100,23 +106,19 @@ func (s *Service) Start(ctx context.Context) error {
 				// Wait 3 seconds before refreshing state.
 			}
 
-			// If we're currently deploying a service, don't
-			// autoscale anything. Wait until the deploy completes
-			// or times out.
-			if s.deploying() {
-				continue
-			}
-
 			// If we don't have the right count, then we need to
 			// update first before measuring max load. We can only
 			// operate on a copy to avoid race conditions.
 			opts := s.CopyOpts()
 			switch {
 			case len(vms) > opts.Max:
-				// Teardown servers.
+				var err error
+				vms, err = s.teardownVMs(vms)
+				if err != nil {
+				}
 				continue
 			case len(vms) < opts.Min:
-				// Spin up servers
+				vms = s.startupVMs(opts.Min - len(vms))
 				continue
 			}
 
@@ -165,6 +167,39 @@ func (s *Service) Stop(ctx context.Context) error {
 	case <-stopped:
 		return nil
 	}
+}
+
+func (s *Service) teardownVMs(vms []*VMState, max int) ([]*VMState, error) {
+	// Always prioritize removing unhealthy VMs and those with the lowest
+	// load before any others.
+	sort.Sort(byHealthAndLoad(vms))
+
+	deleteCount := len(vms) - s.Max
+	toDelete := make([]*terrafirma.VM, 0, deleteCount)
+	for i := 0; i < deleteCount; i++ {
+		toDelete = append(toDelete, vms[i].VM)
+	}
+	plan := map[terrafirma.CloudProvider]*terrafirma.ProviderPlan{
+		s.cloudProvider: &terrafirma.ProviderPlan{
+			Destroy: toDelete,
+		},
+	}
+	return vms[:s.Max], nil
+}
+
+func (s *Service) startupVMs(toStart int) ([]*VMState, error) {
+}
+
+// byHealthAndLoad sorts unhealthy and low-load VMs first.
+type byHealthAndLoad []*VMState
+
+func (a byHealthAndLoad) Len() int      { return len(a) }
+func (a byHealthAndLoad) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
+func (a byHealthAndLoad) Less(i, j int) bool {
+	if a[i].Health && !a[j].Health {
+		return false
+	}
+	return a[i].Load < a[j].Load
 }
 
 // TODO(egtann) when yeoman boots (and every min) it should pull down the list
