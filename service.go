@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/thankful-ai/terrafirma"
+	tf "github.com/thankful-ai/terrafirma"
 )
 
 // Service represents a deployed app across one or more VMs.
@@ -18,8 +18,8 @@ import (
 type Service struct {
 	opts *ServiceOpts
 
-	terra         *terrafirma.Terrafirma
-	cloudProvider string
+	terra         *tf.Terrafirma
+	cloudProvider tf.CloudProviderName
 
 	errorReporter Reporter
 
@@ -28,8 +28,8 @@ type Service struct {
 }
 
 func NewService(
-	terra *terrafirma.Terrafirma,
-	cloudProvider string,
+	terra *tf.Terrafirma,
+	cloudProvider tf.CloudProviderName,
 	opts ServiceOpts,
 ) *Service {
 	return &Service{
@@ -44,11 +44,16 @@ func NewService(
 //
 // Autoscaling is considered disabled if Min and Max are the same value.
 type ServiceOpts struct {
-	Name      string `json:"name"`
-	Container string `json:"container"`
-	Version   string `json:"version"`
-	Min       int    `json:"min"`
-	Max       int    `json:"max"`
+	Name        string `json:"name"`
+	Container   string `json:"container"`
+	Version     string `json:"version"`
+	MachineType string `json:"machineType"`
+	AllowHTTP   bool   `json:"allowHTTP"`
+
+	// Min and Max are the only two mutable values once a service has been
+	// created.
+	Min int `json:"min"`
+	Max int `json:"max"`
 }
 
 func (s *Service) CopyOpts() *ServiceOpts {
@@ -56,18 +61,20 @@ func (s *Service) CopyOpts() *ServiceOpts {
 	defer s.mu.RUnlock()
 
 	return &ServiceOpts{
-		Name:      s.Name,
-		Container: s.Container,
-		Version:   s.Version,
-		Min:       s.Min,
-		Max:       s.Max,
+		Name:        s.Name,
+		Container:   s.Container,
+		Version:     s.Version,
+		Min:         s.Min,
+		Max:         s.Max,
+		MachineType: s.MachineType,
+		AllowHTTP:   s.AllowHTTP,
 	}
 }
 
 type VMState struct {
 	Healthy bool
 	Load    float64
-	VM      *terrafirma.VM
+	VM      *tf.VM
 }
 
 func (s *Service) UpdateOpts(opts *ServiceOpts) {
@@ -97,6 +104,8 @@ func (s *Service) Start(ctx context.Context) error {
 	// this monitoring process.
 	var vms []*VMState
 	go func() {
+		// Panic recovery
+
 		for {
 			select {
 			case stopped := <-s.stop:
@@ -115,27 +124,34 @@ func (s *Service) Start(ctx context.Context) error {
 				var err error
 				vms, err = s.teardownVMs(vms)
 				if err != nil {
+					s.errorReporter.Report(
+						fmt.Errorf("teardown vms: %w", err))
 				}
 				continue
 			case len(vms) < opts.Min:
-				vms = s.startupVMs(opts.Min - len(vms))
+				vms, err = s.startupVMs(vms)
+				if err != nil {
+					s.errorReporter.Report(
+						fmt.Errorf("startup vms: %w", err))
+				}
 				continue
 			}
 
 			// Ping our servers for their up-to-date load
 			// information and health, ensuring they're still here.
 			for _, vm := range s.VMs {
-				var foundIP *terrafirma.IP
+				var foundIP *tf.IP
 				for _, ip := range vm.IPs {
-					if ip.Type == terrafirma.IPInternal {
+					if ip.Type == tf.IPInternal {
 						foundIP = ip
 						break
 					}
 				}
 				if foundIP == nil {
-					return fmt.Errorf(
+					s.errorReporter.Report(fmt.Errorf(
 						"missing internal ip on vm: %s",
-						vm.Name)
+						vm.Name))
+					continue
 				}
 			}
 
@@ -175,19 +191,66 @@ func (s *Service) teardownVMs(vms []*VMState, max int) ([]*VMState, error) {
 	sort.Sort(byHealthAndLoad(vms))
 
 	deleteCount := len(vms) - s.Max
-	toDelete := make([]*terrafirma.VM, 0, deleteCount)
+	toDelete := make([]*tf.VM, 0, deleteCount)
 	for i := 0; i < deleteCount; i++ {
 		toDelete = append(toDelete, vms[i].VM)
 	}
-	plan := map[terrafirma.CloudProvider]*terrafirma.ProviderPlan{
-		s.cloudProvider: &terrafirma.ProviderPlan{
+	plan := map[tf.CloudProvider]*tf.ProviderPlan{
+		s.cloudProvider: &tf.ProviderPlan{
 			Destroy: toDelete,
 		},
+	}
+	if err := s.terra.DestroyAll(plan); err != nil {
+		return vms, fmt.Errorf("destroy all: %w", err)
 	}
 	return vms[:s.Max], nil
 }
 
-func (s *Service) startupVMs(toStart int) ([]*VMState, error) {
+func (s *Service) startupVMs(
+	opts *ServiceOpts,
+	vms []*VMState,
+) ([]*VMState, error) {
+	const boxName = "@container"
+	boxes := map[tf.CloudProviderName]map[tf.BoxName]*tf.Box{
+		s.cloudProvider: map[tf.BoxName]*tf.Box{
+			boxName: &tf.Box{
+				Name:        opts.Name,
+				MachineType: opts.MachineType,
+				Image:       "projects/cos-cloud/global/images/family/cos-stable",
+				AllowHTTP:   opts.AllowHTTP,
+			},
+		},
+	}
+
+	// TODO(egtann) create IPs if needed
+	toStart := opts.Min - len(vms)
+
+	plan := map[tf.CloudProvider]*tf.ProviderPlan{
+		s.cloudProvider: &tf.ProviderPlan{
+			Create: make([]*tf.VMTemplate, 0, toStart),
+		},
+	}
+	vms := make([]*VMState, 0, toStart)
+	for i := 0; i < toStart; i++ {
+		plan[s.cloudProvider].Create = append(
+			plan[s.cloudProvider].Create, &tf.VMTemplate{
+				// TODO(egtann) come up with a name for these
+				VMName:      "",
+				BoxName:     boxName,
+				Image:       "projects/cos-cloud/global/images/family/cos-stable",
+				MachineType: opts.MachineType,
+				AllowHTTP:   opts.AllowHTTP,
+				Tags:        s.tags(),
+
+				// TODO(egtann) IPs here
+			})
+	}
+	if err = s.terra.CreateAll(boxes, plan); err != nil {
+		return nil, fmt.Errorf("create all: %w", err)
+	}
+
+	// TODO(egtann) Get inventory and new VMs, return them here
+	return nil, nil
 }
 
 // byHealthAndLoad sorts unhealthy and low-load VMs first.
@@ -205,3 +268,19 @@ func (a byHealthAndLoad) Less(i, j int) bool {
 // TODO(egtann) when yeoman boots (and every min) it should pull down the list
 // of services with specific containers. If the state ever falls out of line
 // with its expectation, then it should fix that.
+
+// tags to uniquely identify this service in the cloud provider. Each cloud
+// provider may have specific formatting requirements, and they are each
+// responsible for transforming these tags to satisfy those requirements.
+func (s *Service) tags() []string {
+	prefix := func(typ, name string) string {
+		return fmt.Sprintf("ym-%s-%s", typ, name)
+	}
+	return []string{
+		prefix("n", s.Name),
+		prefix("c", s.Container),
+		prefix("v", s.Version),
+		prefix("m", s.MachineType),
+		prefix("a", s.AllowHTTP),
+	}
+}

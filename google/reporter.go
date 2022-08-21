@@ -38,7 +38,7 @@ func NewReporter(opts ReporterOpts) error {
 	}
 }
 
-func (r *Reporter) Report(ctx context.Context, origErr error) {
+func (r *Reporter) Report(origErr error) {
 	client := newClient()
 
 	type serviceContext struct {
@@ -59,18 +59,25 @@ func (r *Reporter) Report(ctx context.Context, origErr error) {
 		fmt.Fprintf(os.Stderr, "failed to report error (%v): %v\n",
 			origErr, reportErr)
 	}
-	req, err := http.NewRequest(http.MethodPost, r.url,
+
+	ctx, cancel := context.WithTimeout(context.Background(),
+		10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.url,
 		json.NewEncoder(data))
 	if err != nil {
 		logErr(origErr, fmt.Errorf("new request: %w", err))
 		return
 	}
+
 	rsp, err := client.Do(req)
 	if err != nil {
 		logErr(origErr, fmt.Errorf("do: %w", err))
 		return
 	}
 	defer func() { _ = rsp.Body.Close() }()
+
 	if rsp.StatusCode != http.StatusCreated {
 		logErr(origErr, fmt.Errorf("unexpected status code: %d",
 			rsp.StatusCode))
