@@ -2,8 +2,11 @@ package yeoman
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
 	"sort"
 	"strconv"
 	"strings"
@@ -11,6 +14,12 @@ import (
 	"time"
 
 	tf "github.com/thankful-ai/terrafirma"
+)
+
+// The following are load thresholds for autoscaling services up and down.
+const (
+	scaleUpAverageLoad   = 0.7
+	scaleDownAverageLoad = 0.3
 )
 
 // Service represents a deployed app across one or more VMs.
@@ -74,10 +83,14 @@ func (s *Service) CopyOpts() *ServiceOpts {
 	}
 }
 
-type VMState struct {
-	Healthy bool
-	Load    float64
-	VM      *tf.VM
+type stats struct {
+	healthy bool
+	load    float64
+}
+
+type vmState struct {
+	stats stats
+	vm    *tf.VM
 }
 
 func (s *Service) UpdateOpts(opts *ServiceOpts) {
@@ -87,13 +100,13 @@ func (s *Service) UpdateOpts(opts *ServiceOpts) {
 	s.opts = opts
 }
 
-func averageLoad(vms []*VMState) float64 {
+func averageLoad(vms []*vmState) float64 {
 	if len(vms) == 0 {
 		return 0
 	}
 	var f float64
 	for _, vm := range vms {
-		f += vm.Load
+		f += vm.stats.load
 	}
 	return f / float64(len(vms))
 }
@@ -105,7 +118,7 @@ func (s *Service) Start(ctx context.Context) {
 
 	// This represents state of the service that's discovered and managed by
 	// this monitoring process.
-	var vms []*VMState
+	var vms []*vmState
 	go func() {
 		// Panic recovery
 
@@ -145,7 +158,7 @@ func (s *Service) Start(ctx context.Context) {
 			// information and health, ensuring they're still here.
 			for _, vm := range vms {
 				var foundIP *tf.IP
-				for _, ip := range vm.VM.IPs {
+				for _, ip := range vm.vm.IPs {
 					if ip.Type == tf.IPInternal {
 						foundIP = ip
 						break
@@ -154,16 +167,84 @@ func (s *Service) Start(ctx context.Context) {
 				if foundIP == nil {
 					s.errorReporter.Report(fmt.Errorf(
 						"missing internal ip on vm: %s",
-						vm.VM.Name))
+						vm.vm.Name))
 					continue
 				}
 			}
 
-			// Start with the assumption of max load and needing to
-			// spin up servers, and let our checks change our mind.
-			// avgLoad := float64(1)
+			for _, vm := range vms {
+				var err error
+				vm.stats, err = getStats(vm)
+				if err != nil {
+					s.errorReporter.Report(fmt.Errorf(
+						"get stats: %w", err))
+					vm.stats.healthy = false
+					vm.stats.load = 0
+					continue
+				}
+			}
+
+			// TODO(egtann) should we use the moving average across
+			// 3 or 4 time periods to determine the true load,
+			// rather than a snapshot moment in time. We want to
+			// scale up under sustained load, not a flash in the
+			// pan, since it'll take longer to boot a new VM than
+			// just processing the web request in most
+			// circumstances.
+			avg := averageLoad(vms)
+			if avg > scaleUpAverageLoad {
+				// TODO(egtann) while scaling is taking place,
+				// we can't continue, since we'll scale up to
+				// the max number of servers right away
+				// (probably needlessly) given the delay to boot
+				// a server vs the amount of time it takes to
+				// process requests. It'll be 10-30s before we
+				// see a drop in load.
+			}
 		}
 	}()
+}
+
+func getStats(vm *vmState) (stats, error) {
+	var zero stats
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	var internalIP string
+	for _, ip := range vm.vm.IPs {
+		if ip.Type == tf.IPInternal {
+			internalIP = ip.Addr
+			break
+		}
+	}
+	if ip == "" {
+		return zero, errors.New("missing internal ip")
+	}
+
+	uri := fmt.Sprintf("%s/health", internalIP)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
+	if err != nil {
+		return zero, fmt.Errorf("new request with context: %w", err)
+	}
+	rsp, err := HTTPClient().Do(req)
+	if err != nil {
+		return zero, fmt.Errorf("do: %w", err)
+	}
+	defer func() { _ = rsp.Body.Close() }()
+
+	if rsp.StatusCode != http.StatusOK {
+		return zero, fmt.Errorf("unexpected status, want 200: %d",
+			rsp.StatusCode)
+	}
+
+	var data struct {
+		Load float64 `json:"load"`
+	}
+	if err := json.NewDecoder(rsp.Body).Decode(&data); err != nil {
+		return zero, fmt.Errorf("decode: %w", err)
+	}
+	return stats{Healthy: true, Load: data.Load}, nil
 }
 
 func (s *Service) Stop(ctx context.Context) error {
@@ -189,7 +270,7 @@ func (s *Service) Stop(ctx context.Context) error {
 	}
 }
 
-func (s *Service) teardownVMs(vms []*VMState, max int) ([]*VMState, error) {
+func (s *Service) teardownVMs(vms []*vmState, max int) ([]*vmState, error) {
 	// Always prioritize removing unhealthy VMs and those with the lowest
 	// load before any others.
 	sort.Sort(byHealthAndLoad(vms))
@@ -212,8 +293,8 @@ func (s *Service) teardownVMs(vms []*VMState, max int) ([]*VMState, error) {
 
 func (s *Service) startupVMs(
 	opts *ServiceOpts,
-	vms []*VMState,
-) ([]*VMState, error) {
+	vms []*vmState,
+) ([]*vmState, error) {
 	const boxName = "@container"
 	boxes := map[tf.CloudProviderName]map[tf.BoxName]*tf.Box{
 		s.cloudProvider: map[tf.BoxName]*tf.Box{
@@ -257,18 +338,18 @@ func (s *Service) startupVMs(
 }
 
 // byHealthAndLoad sorts unhealthy and low-load VMs first.
-type byHealthAndLoad []*VMState
+type byHealthAndLoad []*vmState
 
 func (a byHealthAndLoad) Len() int      { return len(a) }
 func (a byHealthAndLoad) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
 func (a byHealthAndLoad) Less(i, j int) bool {
-	if !a[i].Healthy {
+	if !a[i].healthy {
 		return true
 	}
-	if !a[j].Healthy {
+	if !a[j].healthy {
 		return false
 	}
-	return a[i].Load < a[j].Load
+	return a[i].load < a[j].load
 }
 
 // TODO(egtann) when yeoman boots (and every min) it should pull down the list
@@ -294,13 +375,13 @@ func (s *Service) tags() []string {
 // firstID generates the lowest possible unique identifier for a VM in the
 // service, useful for generating simple, incrementing names. It fills in holes,
 // such that VMs with IDs of 1, 3, 4 will have a firstID of 2.
-func firstID(vms []*VMState) (int, error) {
+func firstID(vms []*vmState) (int, error) {
 	if len(vms) == 0 {
 		return 1, nil
 	}
 	ids := make([]int, 0, len(vms))
 	for _, vm := range vms {
-		parts := strings.Split(vm.VM.Name, "-")
+		parts := strings.Split(vm.vm.Name, "-")
 		num, err := strconv.Atoi(parts[len(parts)-1])
 		if err != nil {
 			return 0, fmt.Errorf("atoi %q: %w", parts[len(parts)-1], err)
@@ -317,4 +398,26 @@ func firstID(vms []*VMState) (int, error) {
 		want++
 	}
 	return want, nil
+}
+
+// HTTPClient returns an HTTP client that doesn't share a global transport. The
+// implementation is taken from github.com/hashicorp/go-cleanhttp.
+func HTTPClient() *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   30 * time.Second,
+				KeepAlive: 30 * time.Second,
+				DualStack: true,
+			}).DialContext,
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConnsPerHost:   -1,
+			DisableKeepAlives:     true,
+		},
+	}
 }

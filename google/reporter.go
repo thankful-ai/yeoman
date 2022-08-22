@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"time"
@@ -39,7 +38,7 @@ func NewReporter(opts ReporterOpts) error {
 }
 
 func (r *Reporter) Report(origErr error) {
-	client := newClient()
+	client := yeoman.HTTPClient()
 
 	type serviceContext struct {
 		Service string `json:"service"`
@@ -84,26 +83,5 @@ func (r *Reporter) Report(origErr error) {
 		byt, _ := io.ReadAll(rsp.Body)
 		fmt.Println(string(byt))
 		return
-	}
-}
-
-// newClient returns an HTTP client that doesn't share a global transport. The
-// implementation is taken from github.com/hashicorp/go-cleanhttp.
-func newClient() *http.Client {
-	return &http.Client{Transport: &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
-		DialContext: (&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-			DualStack: true,
-		}).DialContext,
-		MaxIdleConns:          100,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConnsPerHost:   -1,
-		DisableKeepAlives:     true,
-	},
 	}
 }

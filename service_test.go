@@ -31,9 +31,9 @@ func TestFirstID(t *testing.T) {
 		t.Run(fmt.Sprintf("test_%d", i), func(t *testing.T) {
 			t.Parallel()
 
-			vms := make([]*VMState, 0, len(tc.have))
+			vms := make([]*vmState, 0, len(tc.have))
 			for _, name := range tc.have {
-				vms = append(vms, &VMState{
+				vms = append(vms, &vmState{
 					VM: &tf.VM{
 						Name: name,
 					},
@@ -51,21 +51,21 @@ func TestSortByHealthAndLoad(t *testing.T) {
 	t.Parallel()
 
 	type testcase struct {
-		have []*VMState
-		want []*VMState
+		have []*vmState
+		want []*vmState
 	}
 	tcs := []testcase{{
-		have: []*VMState{{Healthy: true}, {Healthy: false}},
-		want: []*VMState{{Healthy: false}, {Healthy: true}},
+		have: []*vmState{{Healthy: true}, {Healthy: false}},
+		want: []*vmState{{Healthy: false}, {Healthy: true}},
 	}, {
-		have: []*VMState{{Load: 1}, {Load: 0}},
-		want: []*VMState{{Load: 0}, {Load: 1}},
+		have: []*vmState{{Load: 1}, {Load: 0}},
+		want: []*vmState{{Load: 0}, {Load: 1}},
 	}, {
-		have: []*VMState{
+		have: []*vmState{
 			{Healthy: true, Load: 1},
 			{Healthy: false, Load: 0},
 		},
-		want: []*VMState{
+		want: []*vmState{
 			{Healthy: false, Load: 0},
 			{Healthy: true, Load: 1},
 		},
