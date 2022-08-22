@@ -2,8 +2,11 @@ package yeoman
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -61,13 +64,13 @@ func (s *Service) CopyOpts() *ServiceOpts {
 	defer s.mu.RUnlock()
 
 	return &ServiceOpts{
-		Name:        s.Name,
-		Container:   s.Container,
-		Version:     s.Version,
-		Min:         s.Min,
-		Max:         s.Max,
-		MachineType: s.MachineType,
-		AllowHTTP:   s.AllowHTTP,
+		Name:        s.opts.Name,
+		Container:   s.opts.Container,
+		Version:     s.opts.Version,
+		Min:         s.opts.Min,
+		Max:         s.opts.Max,
+		MachineType: s.opts.MachineType,
+		AllowHTTP:   s.opts.AllowHTTP,
 	}
 }
 
@@ -84,20 +87,20 @@ func (s *Service) UpdateOpts(opts *ServiceOpts) {
 	s.opts = opts
 }
 
-func (s *Service) AverageLoad() float64 {
-	if len(s.Loads) == 0 {
+func averageLoad(vms []*VMState) float64 {
+	if len(vms) == 0 {
 		return 0
 	}
 	var f float64
-	for _, load := range s.Loads {
-		f += load
+	for _, vm := range vms {
+		f += vm.Load
 	}
-	return f / len(s.Loads)
+	return f / float64(len(vms))
 }
 
 // Start a monitor for each service which when started will pull down the
 // current state for it.
-func (s *Service) Start(ctx context.Context) error {
+func (s *Service) Start(ctx context.Context) {
 	s.stop = make(chan chan struct{})
 
 	// This represents state of the service that's discovered and managed by
@@ -122,14 +125,15 @@ func (s *Service) Start(ctx context.Context) error {
 			switch {
 			case len(vms) > opts.Max:
 				var err error
-				vms, err = s.teardownVMs(vms)
+				vms, err = s.teardownVMs(vms, opts.Max)
 				if err != nil {
 					s.errorReporter.Report(
 						fmt.Errorf("teardown vms: %w", err))
 				}
 				continue
 			case len(vms) < opts.Min:
-				vms, err = s.startupVMs(vms)
+				var err error
+				vms, err = s.startupVMs(opts, vms)
 				if err != nil {
 					s.errorReporter.Report(
 						fmt.Errorf("startup vms: %w", err))
@@ -139,9 +143,9 @@ func (s *Service) Start(ctx context.Context) error {
 
 			// Ping our servers for their up-to-date load
 			// information and health, ensuring they're still here.
-			for _, vm := range s.VMs {
+			for _, vm := range vms {
 				var foundIP *tf.IP
-				for _, ip := range vm.IPs {
+				for _, ip := range vm.VM.IPs {
 					if ip.Type == tf.IPInternal {
 						foundIP = ip
 						break
@@ -150,14 +154,14 @@ func (s *Service) Start(ctx context.Context) error {
 				if foundIP == nil {
 					s.errorReporter.Report(fmt.Errorf(
 						"missing internal ip on vm: %s",
-						vm.Name))
+						vm.VM.Name))
 					continue
 				}
 			}
 
 			// Start with the assumption of max load and needing to
 			// spin up servers, and let our checks change our mind.
-			avgLoad := float64(1)
+			// avgLoad := float64(1)
 		}
 	}()
 }
@@ -168,8 +172,8 @@ func (s *Service) Stop(ctx context.Context) error {
 	}
 	stopped := make(chan struct{})
 	select {
-	case err := <-ctx.Done():
-		return fmt.Errorf("send stop signal: %w", err)
+	case <-ctx.Done():
+		return errors.New("failed to send stop signal")
 	case s.stop <- stopped:
 		// Wait on sending our signal that we want to stop. Once this
 		// happens, we'll keep going.
@@ -178,8 +182,8 @@ func (s *Service) Stop(ctx context.Context) error {
 	// We know that we sent the request to stop, so wait on the monitor to
 	// confirm that it has stopped.
 	select {
-	case err := <-ctx.Done():
-		return fmt.Errorf("receive stop confirmation: %w", err)
+	case <-ctx.Done():
+		return errors.New("did not receive stop confirmation")
 	case <-stopped:
 		return nil
 	}
@@ -190,12 +194,12 @@ func (s *Service) teardownVMs(vms []*VMState, max int) ([]*VMState, error) {
 	// load before any others.
 	sort.Sort(byHealthAndLoad(vms))
 
-	deleteCount := len(vms) - s.Max
+	deleteCount := len(vms) - max
 	toDelete := make([]*tf.VM, 0, deleteCount)
 	for i := 0; i < deleteCount; i++ {
 		toDelete = append(toDelete, vms[i].VM)
 	}
-	plan := map[tf.CloudProvider]*tf.ProviderPlan{
+	plan := map[tf.CloudProviderName]*tf.ProviderPlan{
 		s.cloudProvider: &tf.ProviderPlan{
 			Destroy: toDelete,
 		},
@@ -203,7 +207,7 @@ func (s *Service) teardownVMs(vms []*VMState, max int) ([]*VMState, error) {
 	if err := s.terra.DestroyAll(plan); err != nil {
 		return vms, fmt.Errorf("destroy all: %w", err)
 	}
-	return vms[:s.Max], nil
+	return vms[:max], nil
 }
 
 func (s *Service) startupVMs(
@@ -214,7 +218,7 @@ func (s *Service) startupVMs(
 	boxes := map[tf.CloudProviderName]map[tf.BoxName]*tf.Box{
 		s.cloudProvider: map[tf.BoxName]*tf.Box{
 			boxName: &tf.Box{
-				Name:        opts.Name,
+				Name:        tf.BoxName(opts.Name),
 				MachineType: opts.MachineType,
 				Image:       "projects/cos-cloud/global/images/family/cos-stable",
 				AllowHTTP:   opts.AllowHTTP,
@@ -225,12 +229,11 @@ func (s *Service) startupVMs(
 	// TODO(egtann) create IPs if needed
 	toStart := opts.Min - len(vms)
 
-	plan := map[tf.CloudProvider]*tf.ProviderPlan{
+	plan := map[tf.CloudProviderName]*tf.ProviderPlan{
 		s.cloudProvider: &tf.ProviderPlan{
 			Create: make([]*tf.VMTemplate, 0, toStart),
 		},
 	}
-	vms := make([]*VMState, 0, toStart)
 	for i := 0; i < toStart; i++ {
 		plan[s.cloudProvider].Create = append(
 			plan[s.cloudProvider].Create, &tf.VMTemplate{
@@ -245,7 +248,7 @@ func (s *Service) startupVMs(
 				// TODO(egtann) IPs here
 			})
 	}
-	if err = s.terra.CreateAll(boxes, plan); err != nil {
+	if err := s.terra.CreateAll(boxes, plan); err != nil {
 		return nil, fmt.Errorf("create all: %w", err)
 	}
 
@@ -259,7 +262,10 @@ type byHealthAndLoad []*VMState
 func (a byHealthAndLoad) Len() int      { return len(a) }
 func (a byHealthAndLoad) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
 func (a byHealthAndLoad) Less(i, j int) bool {
-	if a[i].Health && !a[j].Health {
+	if !a[i].Healthy {
+		return true
+	}
+	if !a[j].Healthy {
 		return false
 	}
 	return a[i].Load < a[j].Load
@@ -277,10 +283,38 @@ func (s *Service) tags() []string {
 		return fmt.Sprintf("ym-%s-%s", typ, name)
 	}
 	return []string{
-		prefix("n", s.Name),
-		prefix("c", s.Container),
-		prefix("v", s.Version),
-		prefix("m", s.MachineType),
-		prefix("a", s.AllowHTTP),
+		prefix("n", s.opts.Name),
+		prefix("c", s.opts.Container),
+		prefix("v", s.opts.Version),
+		prefix("m", s.opts.MachineType),
+		prefix("a", strconv.FormatBool(s.opts.AllowHTTP)),
 	}
+}
+
+// firstID generates the lowest possible unique identifier for a VM in the
+// service, useful for generating simple, incrementing names. It fills in holes,
+// such that VMs with IDs of 1, 3, 4 will have a firstID of 2.
+func firstID(vms []*VMState) (int, error) {
+	if len(vms) == 0 {
+		return 1, nil
+	}
+	ids := make([]int, 0, len(vms))
+	for _, vm := range vms {
+		parts := strings.Split(vm.VM.Name, "-")
+		num, err := strconv.Atoi(parts[len(parts)-1])
+		if err != nil {
+			return 0, fmt.Errorf("atoi %q: %w", parts[len(parts)-1], err)
+		}
+		ids = append(ids, num)
+	}
+	sort.Ints(ids)
+
+	want := 1
+	for _, id := range ids {
+		if id != want {
+			return want, nil
+		}
+		want++
+	}
+	return want, nil
 }
