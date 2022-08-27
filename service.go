@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -100,7 +101,7 @@ func (s *Service) UpdateOpts(opts *ServiceOpts) {
 	s.opts = opts
 }
 
-func averageLoad(vms []*vmState) float64 {
+func averageVMLoad(vms []*vmState) float64 {
 	if len(vms) == 0 {
 		return 0
 	}
@@ -111,6 +112,17 @@ func averageLoad(vms []*vmState) float64 {
 	return f / float64(len(vms))
 }
 
+func movingAverageLoad(loads []float64) float64 {
+	if len(loads) == 0 {
+		return 0
+	}
+	var f float64
+	for _, load := range loads {
+		f += load
+	}
+	return f / float64(len(loads))
+}
+
 // Start a monitor for each service which when started will pull down the
 // current state for it.
 func (s *Service) Start(ctx context.Context) {
@@ -118,17 +130,24 @@ func (s *Service) Start(ctx context.Context) {
 
 	// This represents state of the service that's discovered and managed by
 	// this monitoring process.
-	var vms []*vmState
+	var (
+		vms          []*vmState
+		loadAverages []float64
+		extraDelay   time.Duration
+	)
 	go func() {
-		// Panic recovery
-
+		defer func() { recoverPanic() }()
 		for {
 			select {
 			case stopped := <-s.stop:
 				stopped <- struct{}{}
 				return
-			case <-time.After(3 * time.Second):
-				// Wait 3 seconds before refreshing state.
+			case <-time.After(3*time.Second + extraDelay):
+				// Wait 3 seconds before refreshing state, or
+				// extra time if scaling up or down to allow
+				// time for requests to be routed to the new
+				// VMs and adjust each servers' loads.
+				extraDelay = 0
 			}
 
 			// If we don't have the right count, then we need to
@@ -141,7 +160,7 @@ func (s *Service) Start(ctx context.Context) {
 				vms, err = s.teardownVMs(vms, opts.Max)
 				if err != nil {
 					s.errorReporter.Report(
-						fmt.Errorf("teardown vms: %w", err))
+						fmt.Errorf("teardown vms above max: %w", err))
 				}
 				continue
 			case len(vms) < opts.Min:
@@ -149,7 +168,7 @@ func (s *Service) Start(ctx context.Context) {
 				vms, err = s.startupVMs(opts, vms)
 				if err != nil {
 					s.errorReporter.Report(
-						fmt.Errorf("startup vms: %w", err))
+						fmt.Errorf("startup vms below min: %w", err))
 				}
 				continue
 			}
@@ -157,14 +176,8 @@ func (s *Service) Start(ctx context.Context) {
 			// Ping our servers for their up-to-date load
 			// information and health, ensuring they're still here.
 			for _, vm := range vms {
-				var foundIP *tf.IP
-				for _, ip := range vm.vm.IPs {
-					if ip.Type == tf.IPInternal {
-						foundIP = ip
-						break
-					}
-				}
-				if foundIP == nil {
+				ip := internalIP(vm)
+				if ip == "" {
 					s.errorReporter.Report(fmt.Errorf(
 						"missing internal ip on vm: %s",
 						vm.vm.Name))
@@ -174,7 +187,7 @@ func (s *Service) Start(ctx context.Context) {
 
 			for _, vm := range vms {
 				var err error
-				vm.stats, err = getStats(vm)
+				vm.stats, err = getStats(vm.vm)
 				if err != nil {
 					s.errorReporter.Report(fmt.Errorf(
 						"get stats: %w", err))
@@ -184,45 +197,56 @@ func (s *Service) Start(ctx context.Context) {
 				}
 			}
 
-			// TODO(egtann) should we use the moving average across
-			// 3 or 4 time periods to determine the true load,
-			// rather than a snapshot moment in time. We want to
-			// scale up under sustained load, not a flash in the
-			// pan, since it'll take longer to boot a new VM than
-			// just processing the web request in most
-			// circumstances.
-			avg := averageLoad(vms)
-			if avg > scaleUpAverageLoad {
-				// TODO(egtann) while scaling is taking place,
-				// we can't continue, since we'll scale up to
-				// the max number of servers right away
-				// (probably needlessly) given the delay to boot
-				// a server vs the amount of time it takes to
-				// process requests. It'll be 10-30s before we
-				// see a drop in load.
+			// Use the moving average across 3 or 4 time periods to
+			// determine the true load, rather than a snapshot
+			// moment in time. We want to scale up under sustained
+			// load, not a flash in the pan, since it'll take
+			// longer to boot a new VM than just processing the web
+			// request in most circumstances.
+			avg := averageVMLoad(vms)
+			loadAverages = append(loadAverages, avg)
+			if len(loadAverages) > 5 {
+				loadAverages = loadAverages[1:]
+			}
+			movingAvg := movingAverageLoad(loadAverages)
+			switch {
+			case movingAvg > scaleUpAverageLoad:
+				// We scale up more servers synchronously.
+				// While scaling is taking place, we can't
+				// continue, since we'll scale up to the max
+				// number of servers right away (probably
+				// needlessly) given the delay to boot a server
+				// vs the amount of time it takes to process
+				// requests. It might be 10s before we see a
+				// drop in load even after the VM is booted,
+				// since it'll take some time for existing
+				// requests to finish and the reverse proxy to
+				// send enough traffic to the new boxes.
+				var err error
+				vms, err = s.startupVMs(opts, vms)
+				if err != nil {
+					s.errorReporter.Report(
+						fmt.Errorf("startup vms autoscale: %w", err))
+					continue
+				}
+				extraDelay = 3 * time.Second
+			case movingAvg < scaleDownAverageLoad:
+				// TODO(egtann) complete
+				extraDelay = 3 * time.Second
 			}
 		}
 	}()
 }
 
-func getStats(vm *vmState) (stats, error) {
+func getStatsContext(ctx context.Context, vm *tf.VM) (stats, error) {
 	var zero stats
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	var internalIP string
-	for _, ip := range vm.vm.IPs {
-		if ip.Type == tf.IPInternal {
-			internalIP = ip.Addr
-			break
-		}
-	}
+	ip := internalIP(vm)
 	if ip == "" {
 		return zero, errors.New("missing internal ip")
 	}
 
-	uri := fmt.Sprintf("%s/health", internalIP)
+	uri := fmt.Sprintf("%s/health", ip)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
 	if err != nil {
 		return zero, fmt.Errorf("new request with context: %w", err)
@@ -245,6 +269,19 @@ func getStats(vm *vmState) (stats, error) {
 		return zero, fmt.Errorf("decode: %w", err)
 	}
 	return stats{Healthy: true, Load: data.Load}, nil
+}
+
+func getStats(vm *tf.VM) (stats, error) {
+	var zero stats
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	s, err := getStatsContext(ctx, vm)
+	if err != nil {
+		return stats{}, fmt.Errorf("get stats context: %w", err)
+	}
+	return s, nil
 }
 
 func (s *Service) Stop(ctx context.Context) error {
@@ -333,8 +370,80 @@ func (s *Service) startupVMs(
 		return nil, fmt.Errorf("create all: %w", err)
 	}
 
-	// TODO(egtann) Get inventory and new VMs, return them here
-	return nil, nil
+	// Get all of our new VMs for this service.
+	inventory, err := s.terra.Inventory()
+	if err != nil {
+		return nil, fmt.Errorf("inventory: %w", err)
+	}
+	var (
+		vms    []*VM
+		checks []healthCheck
+	)
+	for cloudProvider, providerVMs := range inventory {
+		if cloudProvider != s.cloudProvider {
+			continue
+		}
+
+		// Filter to show only VMs related to this service and version.
+		for _, vm := range providerVMs {
+			parts := strings.Split(vm.Name, "-")
+
+			// VM names are of the form:
+			// ym-$service-$version-$index
+			if len(parts) != 4 {
+				continue
+			}
+			if parts[0] != "ym" ||
+				parts[1] != opts.Name ||
+				parts[2] != opts.Version {
+				continue
+			}
+			vms = append(vms, vm)
+			ip := internalIP(vm)
+			if ip == "" {
+				return nil, fmt.Errorf(
+					"missing internal ip for vm: %s",
+					vm.Name)
+			}
+		}
+	}
+
+	// TODO(egtann) for a large number of VMs (> 1,000?) we should cap the
+	// number of goroutines to prevent too many file descriptors and
+	// maxing network IO?
+	errs := make(chan error, len(vms))
+	ctx, cancel := context.WithTimeout(context.Background(),
+		30*time.Second)
+	defer cancel()
+
+	for _, vm := range vms {
+		vm := vm // Capture reference
+		go func() {
+			defer func() { recoverPanic() }()
+			_, err := getStatsContext(ctx, vm)
+			errs <- err
+		}()
+	}
+	for i := 0; i < len(vms); i++ {
+		select {
+		case err := <-errs:
+			return nil, fmt.Errorf("get stats context: %w", err)
+		case <-ctx.Done():
+			return nil, fmt.Errorf(
+				"timed out waiting for health checks, %d/%d",
+				i+1, len(vms))
+		}
+	}
+
+	// TODO(egtann) update @proxy of the new IPs.
+
+	// All VMs reported that they're healthy.
+	return vms, nil
+}
+
+type healthCheck struct {
+	ip   string
+	path string
 }
 
 // byHealthAndLoad sorts unhealthy and low-load VMs first.
@@ -419,5 +528,26 @@ func HTTPClient() *http.Client {
 			MaxIdleConnsPerHost:   -1,
 			DisableKeepAlives:     true,
 		},
+	}
+}
+
+func internalIP(vm *tf.VM) string {
+	for _, ip := range vm.IPs {
+		if ip.Type == tf.IPInternal {
+			return ip.Addr
+		}
+	}
+	return ""
+}
+
+// recoverPanic from goroutines. We handle panics only by reporting the error
+// and exiting in this goroutine. Panics should never happen. If they do, we
+// want the program to report the issue, log it locally, and exit signalling an
+// error.
+func recoverPanic(errorReporter Reporter) {
+	if r := recover(); r != nil {
+		fmt.Fprintf(os.Stderr, "panicked: %v", r)
+		errorReporter.Report(fmt.Errorf("panicked: %v", r))
+		os.Exit(1)
 	}
 }
