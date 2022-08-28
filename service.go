@@ -17,6 +17,18 @@ import (
 	tf "github.com/thankful-ai/terrafirma"
 )
 
+// TODO(egtann) perhaps copy Heroku's p95 response time metric, rather than
+// require self-reporting load? Doesn't work if some requests may be very slow
+// and others are fast. And if the delay is caused by a database, a slow
+// external API request, etc. So maybe that's not sufficient control.
+//
+// Rather than that maybe we track simultaneous requests to each box and ensure
+// they're below a certain count? But there's a different cost to each request,
+// e.g. fetching a static asset is closer to 0-cost, but a complex DB
+// transaction like deleting a GDPR user across many tables could be high cost.
+// I think it's important that the application self-report its load. More work,
+// yes, but more control over actual load that the server is facing.
+
 // The following are load thresholds for autoscaling services up and down.
 const (
 	scaleUpAverageLoad   = 0.7
@@ -29,18 +41,18 @@ const (
 // container. New deploys create new services. With this design the autoscaling
 // across versions is solved automatically.
 type Service struct {
-	opts *ServiceOpts
+	opts ServiceOpts
 
 	terra         *tf.Terrafirma
 	cloudProvider tf.CloudProviderName
 
 	errorReporter Reporter
 
-	mu   sync.RWMutex
-	stop chan chan struct{}
+	mu     sync.RWMutex
+	stopCh chan chan struct{}
 }
 
-func NewService(
+func newService(
 	terra *tf.Terrafirma,
 	cloudProvider tf.CloudProviderName,
 	opts ServiceOpts,
@@ -48,7 +60,7 @@ func NewService(
 	return &Service{
 		terra:         terra,
 		cloudProvider: cloudProvider,
-		opts:          &opts,
+		opts:          opts,
 	}
 }
 
@@ -69,11 +81,11 @@ type ServiceOpts struct {
 	Max int `json:"max"`
 }
 
-func (s *Service) CopyOpts() *ServiceOpts {
+func (s *Service) CopyOpts() ServiceOpts {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	return &ServiceOpts{
+	return ServiceOpts{
 		Name:        s.opts.Name,
 		Container:   s.opts.Container,
 		Version:     s.opts.Version,
@@ -94,7 +106,7 @@ type vmState struct {
 	vm    *tf.VM
 }
 
-func (s *Service) UpdateOpts(opts *ServiceOpts) {
+func (s *Service) UpdateOpts(opts ServiceOpts) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -125,8 +137,8 @@ func movingAverageLoad(loads []float64) float64 {
 
 // Start a monitor for each service which when started will pull down the
 // current state for it.
-func (s *Service) Start(ctx context.Context) {
-	s.stop = make(chan chan struct{})
+func (s *Service) start() {
+	s.stopCh = make(chan chan struct{})
 
 	// This represents state of the service that's discovered and managed by
 	// this monitoring process.
@@ -136,10 +148,10 @@ func (s *Service) Start(ctx context.Context) {
 		extraDelay   time.Duration
 	)
 	go func() {
-		defer func() { recoverPanic() }()
+		defer func() { recoverPanic(s.errorReporter) }()
 		for {
 			select {
-			case stopped := <-s.stop:
+			case stopped := <-s.stopCh:
 				stopped <- struct{}{}
 				return
 			case <-time.After(3*time.Second + extraDelay):
@@ -176,7 +188,7 @@ func (s *Service) Start(ctx context.Context) {
 			// Ping our servers for their up-to-date load
 			// information and health, ensuring they're still here.
 			for _, vm := range vms {
-				ip := internalIP(vm)
+				ip := internalIP(vm.vm)
 				if ip == "" {
 					s.errorReporter.Report(fmt.Errorf(
 						"missing internal ip on vm: %s",
@@ -197,12 +209,12 @@ func (s *Service) Start(ctx context.Context) {
 				}
 			}
 
-			// Use the moving average across 3 or 4 time periods to
+			// Use the moving average across 5 time periods to
 			// determine the true load, rather than a snapshot
 			// moment in time. We want to scale up under sustained
-			// load, not a flash in the pan, since it'll take
-			// longer to boot a new VM than just processing the web
-			// request in most circumstances.
+			// load, not a flash in the pan, since it'll take longer
+			// to boot a new VM than just processing the web request
+			// in most circumstances.
 			avg := averageVMLoad(vms)
 			loadAverages = append(loadAverages, avg)
 			if len(loadAverages) > 5 {
@@ -227,12 +239,18 @@ func (s *Service) Start(ctx context.Context) {
 				if err != nil {
 					s.errorReporter.Report(
 						fmt.Errorf("startup vms autoscale: %w", err))
-					continue
 				}
 				extraDelay = 3 * time.Second
+				continue
 			case movingAvg < scaleDownAverageLoad:
-				// TODO(egtann) complete
+				var err error
+				vms, err = s.autoscaleTeardownVMs(vms)
+				if err != nil {
+					s.errorReporter.Report(
+						fmt.Errorf("autoscale teardown vms: %w", err))
+				}
 				extraDelay = 3 * time.Second
+				continue
 			}
 		}
 	}()
@@ -268,12 +286,10 @@ func getStatsContext(ctx context.Context, vm *tf.VM) (stats, error) {
 	if err := json.NewDecoder(rsp.Body).Decode(&data); err != nil {
 		return zero, fmt.Errorf("decode: %w", err)
 	}
-	return stats{Healthy: true, Load: data.Load}, nil
+	return stats{healthy: true, load: data.Load}, nil
 }
 
 func getStats(vm *tf.VM) (stats, error) {
-	var zero stats
-
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
@@ -284,15 +300,15 @@ func getStats(vm *tf.VM) (stats, error) {
 	return s, nil
 }
 
-func (s *Service) Stop(ctx context.Context) error {
-	if s.stop == nil {
+func (s *Service) stop(ctx context.Context) error {
+	if s.stopCh == nil {
 		return nil
 	}
 	stopped := make(chan struct{})
 	select {
 	case <-ctx.Done():
 		return errors.New("failed to send stop signal")
-	case s.stop <- stopped:
+	case s.stopCh <- stopped:
 		// Wait on sending our signal that we want to stop. Once this
 		// happens, we'll keep going.
 	}
@@ -307,7 +323,33 @@ func (s *Service) Stop(ctx context.Context) error {
 	}
 }
 
+func (s *Service) autoscaleTeardownVMs(vms []*vmState) ([]*vmState, error) {
+	if len(vms) == 0 {
+		return vms, nil
+	}
+
+	// Always prioritize removing unhealthy VMs and those with the lowest
+	// load before any others.
+	sort.Sort(byHealthAndLoad(vms))
+
+	// Delete the first VM in the list. Autoscaling backs down the count of
+	// VMs slowly, one at a time.
+	plan := map[tf.CloudProviderName]*tf.ProviderPlan{
+		s.cloudProvider: &tf.ProviderPlan{
+			Destroy: []*tf.VM{vms[0].vm},
+		},
+	}
+	if err := s.terra.DestroyAll(plan); err != nil {
+		return vms, fmt.Errorf("destroy all: %w", err)
+	}
+	return vms[1:], nil
+}
+
 func (s *Service) teardownVMs(vms []*vmState, max int) ([]*vmState, error) {
+	if len(vms) == 0 {
+		return vms, nil
+	}
+
 	// Always prioritize removing unhealthy VMs and those with the lowest
 	// load before any others.
 	sort.Sort(byHealthAndLoad(vms))
@@ -315,7 +357,7 @@ func (s *Service) teardownVMs(vms []*vmState, max int) ([]*vmState, error) {
 	deleteCount := len(vms) - max
 	toDelete := make([]*tf.VM, 0, deleteCount)
 	for i := 0; i < deleteCount; i++ {
-		toDelete = append(toDelete, vms[i].VM)
+		toDelete = append(toDelete, vms[i].vm)
 	}
 	plan := map[tf.CloudProviderName]*tf.ProviderPlan{
 		s.cloudProvider: &tf.ProviderPlan{
@@ -329,7 +371,7 @@ func (s *Service) teardownVMs(vms []*vmState, max int) ([]*vmState, error) {
 }
 
 func (s *Service) startupVMs(
-	opts *ServiceOpts,
+	opts ServiceOpts,
 	vms []*vmState,
 ) ([]*vmState, error) {
 	const boxName = "@container"
@@ -375,10 +417,7 @@ func (s *Service) startupVMs(
 	if err != nil {
 		return nil, fmt.Errorf("inventory: %w", err)
 	}
-	var (
-		vms    []*VM
-		checks []healthCheck
-	)
+	vms = []*vmState{}
 	for cloudProvider, providerVMs := range inventory {
 		if cloudProvider != s.cloudProvider {
 			continue
@@ -398,7 +437,7 @@ func (s *Service) startupVMs(
 				parts[2] != opts.Version {
 				continue
 			}
-			vms = append(vms, vm)
+			vms = append(vms, &vmState{vm: vm})
 			ip := internalIP(vm)
 			if ip == "" {
 				return nil, fmt.Errorf(
@@ -419,8 +458,8 @@ func (s *Service) startupVMs(
 	for _, vm := range vms {
 		vm := vm // Capture reference
 		go func() {
-			defer func() { recoverPanic() }()
-			_, err := getStatsContext(ctx, vm)
+			defer func() { recoverPanic(s.errorReporter) }()
+			_, err := getStatsContext(ctx, vm.vm)
 			errs <- err
 		}()
 	}
@@ -436,6 +475,7 @@ func (s *Service) startupVMs(
 	}
 
 	// TODO(egtann) update @proxy of the new IPs.
+	// s.proxy.Update(
 
 	// All VMs reported that they're healthy.
 	return vms, nil
@@ -452,13 +492,13 @@ type byHealthAndLoad []*vmState
 func (a byHealthAndLoad) Len() int      { return len(a) }
 func (a byHealthAndLoad) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
 func (a byHealthAndLoad) Less(i, j int) bool {
-	if !a[i].healthy {
+	if !a[i].stats.healthy {
 		return true
 	}
-	if !a[j].healthy {
+	if !a[j].stats.healthy {
 		return false
 	}
-	return a[i].load < a[j].load
+	return a[i].stats.load < a[j].stats.load
 }
 
 // TODO(egtann) when yeoman boots (and every min) it should pull down the list

@@ -3,6 +3,6 @@ package yeoman
 import "context"
 
 type Store interface {
-	Get(ctx context.Context, name string) ([]byte, error)
-	Set(ctx context.Context, name string, data []byte) error
+	GetServices(ctx context.Context) ([]ServiceOpts, error)
+	SetServices(ctx context.Context, opts []ServiceOpts) error
 }

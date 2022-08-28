@@ -2,6 +2,7 @@ package google
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	secretmanager "cloud.google.com/go/secretmanager/apiv1"
@@ -15,7 +16,37 @@ type Secret struct {
 	ProjectID string
 }
 
-func (s *Secret) Get(ctx context.Context, name string) ([]byte, error) {
+const storeServicesName = "ym-services"
+
+func (s *Secret) GetServices(
+	ctx context.Context,
+) ([]yeoman.ServiceOpt, error) {
+	byt, err := s.get(ctx, storeServicesName)
+	if err != nil {
+		return nil, fmt.Errorf("get: %w", err)
+	}
+	var opts []yeoman.ServiceOpt
+	if err = json.Unmarshal(byt, &opts); err != nil {
+		return nil, fmt.Errorf("unmarshal: %w", err)
+	}
+	return opts, nil
+}
+
+func (s *Secret) SetServices(
+	ctx context.Context,
+	opts []yeoman.ServiceOpts,
+) error {
+	byt, err := json.Marshal(opts)
+	if err != nil {
+		return fmt.Errorf("marshal: %w", err)
+	}
+	if err = s.set(ctx, storeServicesName, byt); err != nil {
+		return fmt.Errorf("set: %w", err)
+	}
+	return nil
+}
+
+func (s *Secret) get(ctx context.Context, name string) ([]byte, error) {
 	client, err := secretmanager.NewClient(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("new client: %w", err)
@@ -33,7 +64,7 @@ func (s *Secret) Get(ctx context.Context, name string) ([]byte, error) {
 	return result.Payload.Data, nil
 }
 
-func (s *Secret) Set(ctx context.Context, name string, data []byte) error {
+func (s *Secret) set(ctx context.Context, name string, data []byte) error {
 	client, err := secretmanager.NewClient(ctx)
 	if err != nil {
 		return fmt.Errorf("new client: %w", err)
