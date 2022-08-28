@@ -1,6 +1,7 @@
 package google
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -26,7 +27,7 @@ type ReporterOpts struct {
 	Project string
 }
 
-func NewReporter(opts ReporterOpts) error {
+func NewReporter(opts ReporterOpts) *Reporter {
 	return &Reporter{
 		service: opts.Service,
 		version: opts.Version,
@@ -48,11 +49,11 @@ func (r *Reporter) Report(origErr error) {
 		ServiceContext serviceContext `json:"serviceContext"`
 		Message        string         `json:"message"`
 	}{
-		serviceContext: serviceContext{
+		ServiceContext: serviceContext{
 			Service: r.service,
 			Version: r.version,
 		},
-		message: origErr.Error(),
+		Message: origErr.Error(),
 	}
 	logErr := func(origErr, reportErr error) {
 		fmt.Fprintf(os.Stderr, "failed to report error (%v): %v\n",
@@ -63,8 +64,13 @@ func (r *Reporter) Report(origErr error) {
 		10*time.Second)
 	defer cancel()
 
+	byt, err := json.Marshal(data)
+	if err != nil {
+		logErr(origErr, fmt.Errorf("marshal: %w", err))
+		return
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.url,
-		json.NewEncoder(data))
+		bytes.NewReader(byt))
 	if err != nil {
 		logErr(origErr, fmt.Errorf("new request: %w", err))
 		return

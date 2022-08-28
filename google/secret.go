@@ -4,35 +4,38 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 
-	secretmanager "cloud.google.com/go/secretmanager/apiv1"
+	"cloud.google.com/go/storage"
 	"github.com/egtann/yeoman"
-	secretmanagerpb "google.golang.org/genproto/googleapis/cloud/secretmanager/v1"
 )
 
-var _ yeoman.Store = &Secret{}
+var _ yeoman.Store = &Bucket{}
 
-type Secret struct {
+type Bucket struct {
 	ProjectID string
 }
 
-const storeServicesName = "ym-services"
+const (
+	nameBucket   = "yeoman"
+	nameServices = "services"
+)
 
-func (s *Secret) GetServices(
+func (s *Bucket) GetServices(
 	ctx context.Context,
-) ([]yeoman.ServiceOpt, error) {
-	byt, err := s.get(ctx, storeServicesName)
+) ([]yeoman.ServiceOpts, error) {
+	byt, err := s.get(ctx, nameServices)
 	if err != nil {
 		return nil, fmt.Errorf("get: %w", err)
 	}
-	var opts []yeoman.ServiceOpt
+	var opts []yeoman.ServiceOpts
 	if err = json.Unmarshal(byt, &opts); err != nil {
 		return nil, fmt.Errorf("unmarshal: %w", err)
 	}
 	return opts, nil
 }
 
-func (s *Secret) SetServices(
+func (s *Bucket) SetServices(
 	ctx context.Context,
 	opts []yeoman.ServiceOpts,
 ) error {
@@ -40,62 +43,54 @@ func (s *Secret) SetServices(
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
-	if err = s.set(ctx, storeServicesName, byt); err != nil {
+	if err = s.set(ctx, nameServices, byt); err != nil {
 		return fmt.Errorf("set: %w", err)
 	}
 	return nil
 }
 
-func (s *Secret) get(ctx context.Context, name string) ([]byte, error) {
-	client, err := secretmanager.NewClient(ctx)
+func (s *Bucket) get(ctx context.Context, name string) ([]byte, error) {
+	client, err := storage.NewClient(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("new client: %w", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
-	accessRequest := &secretmanagerpb.AccessSecretVersionRequest{
-		Name: fmt.Sprintf("projects/%s/secrets/%s/versions/latest",
-			s.ProjectID, name),
-	}
-	result, err := client.AccessSecretVersion(ctx, accessRequest)
+	r, err := client.Bucket(nameBucket).Object(name).NewReader(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("access secret version: %w", err)
+		return nil, fmt.Errorf("new reader: %w", err)
 	}
-	return result.Payload.Data, nil
+	defer func() { _ = r.Close() }()
+
+	byt, err := io.ReadAll(r)
+	if err != nil {
+		return nil, fmt.Errorf("read all: %w", err)
+	}
+	return byt, nil
 }
 
-func (s *Secret) set(ctx context.Context, name string, data []byte) error {
-	client, err := secretmanager.NewClient(ctx)
+func (s *Bucket) set(ctx context.Context, name string, data []byte) error {
+	client, err := storage.NewClient(ctx)
 	if err != nil {
 		return fmt.Errorf("new client: %w", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
-	createSecretReq := &secretmanagerpb.CreateSecretRequest{
-		Parent:   fmt.Sprintf("projects/%s", s.ProjectID),
-		SecretId: name,
-		Secret: &secretmanagerpb.Secret{
-			Replication: &secretmanagerpb.Replication{
-				Replication: &secretmanagerpb.Replication_Automatic_{
-					Automatic: &secretmanagerpb.Replication_Automatic{},
-				},
-			},
-		},
-	}
-	secret, err := client.CreateSecret(ctx, createSecretReq)
-	if err != nil {
-		return fmt.Errorf("create secret: %w", err)
+	w := client.Bucket(nameBucket).Object(name).NewWriter(ctx)
+
+	var closed bool
+	defer func() {
+		if !closed {
+			_ = w.Close()
+		}
+	}()
+	if _, err = w.Write(data); err != nil {
+		return fmt.Errorf("write: %w", err)
 	}
 
-	addSecretVersionReq := &secretmanagerpb.AddSecretVersionRequest{
-		Parent: secret.Name,
-		Payload: &secretmanagerpb.SecretPayload{
-			Data: data,
-		},
-	}
-	_, err = client.AddSecretVersion(ctx, addSecretVersionReq)
-	if err != nil {
-		return fmt.Errorf("add secret version: %w", err)
+	closed = true
+	if err = w.Close(); err != nil {
+		return fmt.Errorf("close: %w", err)
 	}
 	return nil
 }
