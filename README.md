@@ -70,7 +70,7 @@ yeoman's core goal is simplicity, and that carries through to its CLI.
 	  commands will use.
 	* This creates or modifies a `.yeoman.json` file in your current
 	  directory.
-* `yeoman service create|update|destroy $name`
+* `yeoman service list|get|set|delete [$name]`
 	* `yeoman -n 3:5 -c $containerName service create $name`:
 		* `-n` is the number to run with replication. This is in the
 		  form of `min:max` for autoscaling. To disable autoscaling,
@@ -82,10 +82,7 @@ yeoman's core goal is simplicity, and that carries through to its CLI.
 	* `yeoman -n 3:10 -c $containerName2 service update $name`
 	* `yeoman service destroy $name`
 * `yeoman deploy $serviceName`:
-	* Adds a service if one doesn't exist, so yeoman will start tracking
-	  it.
-	* Scales up or down the infra as needed according to the settings.
-	* Deploys the latest container.
+	* Deploys the latest container for the service.
 	* Waits for the service to come online and checks health on the new
 	  version.
 	* If everything is successful, brings down the old version.
