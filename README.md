@@ -123,3 +123,29 @@ range.
 
 Since this project is intended in many ways to be the oppositite of "Nomad," I
 selected something that connotes that it'll be here a long time.
+
+## Scalability
+
+Instead of one statefile, we could have multiple statefiles -- one per service.
+Then locks are only needed on a per-service basis. e.g. a bucket with the
+following structure could work:
+
+yeoman:
+	- myService
+	- mySecondService
+
+Containing version information and what the target states are. When deploying
+or modifying the services in any way, Yeoman will acquire an exclusive lock on
+that particular service.
+
+Instead of one yeoman server, you could have multiple for redundancy. You just
+need individual IPs, since they're coordinated with this distributed lock.
+
+https://github.com/mco-gh/gcslock -> using Google Cloud bucket as a mutex!
+	> Need to make it easy to override in the case of a known deadlock,
+	> e.g. `-f`.
+
+> Create a bucket in which to store your lock file using the command gsutil mb
+> 	gs://your-bucket-name.
+> Enable object versioning in your bucket using the command gsutil versioning
+> 	set on gs://your-bucket-name.
