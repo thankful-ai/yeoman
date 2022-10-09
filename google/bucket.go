@@ -5,14 +5,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 
 	"cloud.google.com/go/storage"
 	"github.com/egtann/yeoman"
+	"google.golang.org/api/option"
 )
 
 var _ yeoman.Store = &Bucket{}
 
-type Bucket struct{}
+type Bucket struct {
+	Client *http.Client
+}
 
 const (
 	nameBucket   = "yeoman"
@@ -48,7 +52,7 @@ func (b *Bucket) SetServices(
 }
 
 func (b *Bucket) get(ctx context.Context, name string) ([]byte, error) {
-	client, err := storage.NewClient(ctx)
+	client, err := storage.NewClient(ctx, option.WithHTTPClient(b.Client))
 	if err != nil {
 		return nil, fmt.Errorf("new client: %w", err)
 	}

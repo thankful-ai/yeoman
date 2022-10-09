@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"math/rand"
 	"net/http"
 	"net/netip"
@@ -125,14 +126,11 @@ func createService(args []string, opts serviceOpts) error {
 	defer func() { cancel() }()
 	client := http.Client{}
 
-	// Try all IPs in rotation, but randomize them each run.
-	ips := conf.IPs
-	rand.Shuffle(len(ips), func(i, j int) { ips[i], ips[j] = ips[j], ips[i] })
-
 	var errs error
-	for _, ip := range ips {
+	for _, ip := range conf.IPs {
 		req, err := http.NewRequest(http.MethodPost,
-			fmt.Sprintf("http://%s", ip), bytes.NewReader(byt))
+			fmt.Sprintf("http://%s/services", ip),
+			bytes.NewReader(byt))
 		if err != nil {
 			return fmt.Errorf("new request: %w", err)
 		}
@@ -142,8 +140,10 @@ func createService(args []string, opts serviceOpts) error {
 			return err
 		}
 		if err := responseOK(rsp); err != nil {
+			byt, _ := io.ReadAll(rsp.Body)
 			_ = req.Body.Close()
-			errs = multierror.Append(errs, err)
+			errs = multierror.Append(errs,
+				fmt.Errorf("%s: %w: %s", ip, err, string(byt)))
 			continue
 		}
 		_ = req.Body.Close()
@@ -165,7 +165,7 @@ func parseArg(args []string) (string, []string) {
 }
 
 type config struct {
-	IPs []netip.Addr `json:"ips"`
+	IPs []netip.AddrPort `json:"ips"`
 }
 
 func parseConfig() (config, error) {
@@ -177,6 +177,12 @@ func parseConfig() (config, error) {
 	if err := json.Unmarshal(byt, &conf); err != nil {
 		return conf, fmt.Errorf("unmarshal: %w", err)
 	}
+
+	// Try all IPs in rotation, but randomize them each run.
+	ips := conf.IPs
+	rand.Shuffle(len(ips), func(i, j int) {
+		ips[i], ips[j] = ips[j], ips[i]
+	})
 	return conf, nil
 }
 
@@ -201,6 +207,6 @@ func responseOK(rsp *http.Response) error {
 	case http.StatusOK, http.StatusCreated:
 		return nil
 	default:
-		return fmt.Errorf("unexpected status code: %d", rsp.StatusCode)
+		return fmt.Errorf("unexpected status code %d", rsp.StatusCode)
 	}
 }

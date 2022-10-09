@@ -149,3 +149,13 @@ https://github.com/mco-gh/gcslock -> using Google Cloud bucket as a mutex!
 > 	gs://your-bucket-name.
 > Enable object versioning in your bucket using the command gsutil versioning
 > 	set on gs://your-bucket-name.
+
+## Setting up Google
+
+1. Go to https://console.cloud.google.com/iam-admin/serviceaccounts/create and
+   create a new service account. Name it Yeoman or similar to identify it.
+1. Grant "Storage Object Creator" and "Storage Object Viewer" permissions.
+1. After creating it, click on the account, go to the "Keys" tab, and "Add Key"
+   selecting "JSON".
+1. Move the downloaded key to your yeoman folder and name it
+   "credentials.json".
