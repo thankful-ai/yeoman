@@ -88,6 +88,9 @@ func createService(args []string, opts serviceOpts) error {
 	case "", "help":
 		return emptyArgError("create service $NAME")
 	}
+	if len(tail) > 0 {
+		return errors.New("too many arguments")
+	}
 	conf, err := parseConfig()
 	if err != nil {
 		return fmt.Errorf("parse config: %w", err)
@@ -112,7 +115,7 @@ func createService(args []string, opts serviceOpts) error {
 		return errors.New("max must be greater than min")
 	}
 	data := yeoman.ServiceOpts{
-		Name:      strings.Join(tail, " "),
+		Name:      arg,
 		Container: opts.containerName,
 		Min:       min,
 		Max:       max,

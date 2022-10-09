@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	nethttp "net/http"
 	"os"
@@ -9,7 +8,6 @@ import (
 	"github.com/egtann/yeoman/google"
 	"github.com/egtann/yeoman/http"
 	"github.com/rs/zerolog"
-	"google.golang.org/api/idtoken"
 )
 
 func main() {
@@ -21,17 +19,14 @@ func main() {
 
 func run() error {
 	log := zerolog.New(os.Stdout)
-	googleClient, err := idtoken.NewClient(context.Background(), "yeoman",
-		idtoken.WithCredentialsFile("credentials.json"))
-	if err != nil {
-		return fmt.Errorf("new google client: %w", err)
-	}
 	router := http.NewRouter(http.RouterOpts{
-		Log:   log,
-		Store: &google.Bucket{Client: googleClient},
+		Log: log,
+
+		// TODO(egtann) make this a flag
+		Store: google.NewBucket("yeoman-bucket"),
 	})
 	log.Info().Int("port", 5001).Msg("listening")
-	err = nethttp.ListenAndServe(":5001", router.Handler())
+	err := nethttp.ListenAndServe(":5001", router.Handler())
 	if err != nil {
 		return fmt.Errorf("listen and serve: %w", err)
 	}

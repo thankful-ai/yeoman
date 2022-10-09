@@ -152,10 +152,7 @@ https://github.com/mco-gh/gcslock -> using Google Cloud bucket as a mutex!
 
 ## Setting up Google
 
-1. Go to https://console.cloud.google.com/iam-admin/serviceaccounts/create and
-   create a new service account. Name it Yeoman or similar to identify it.
-1. Grant "Storage Object Creator" and "Storage Object Viewer" permissions.
-1. After creating it, click on the account, go to the "Keys" tab, and "Add Key"
-   selecting "JSON".
-1. Move the downloaded key to your yeoman folder and name it
-   "credentials.json".
+1. Install gcloud.
+1. Run: `gcloud auth application-default login`
+
+	> TODO(egtann) figure out a better mechanism for easy deployment.

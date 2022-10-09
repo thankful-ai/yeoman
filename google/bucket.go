@@ -5,60 +5,88 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 
 	"cloud.google.com/go/storage"
 	"github.com/egtann/yeoman"
-	"google.golang.org/api/option"
+	"google.golang.org/api/iterator"
 )
 
 var _ yeoman.Store = &Bucket{}
 
-type Bucket struct {
-	Client *http.Client
-}
+type Bucket struct{ name string }
 
-const (
-	nameBucket   = "yeoman"
-	nameServices = "services"
-)
+func NewBucket(name string) *Bucket {
+	return &Bucket{name: name}
+}
 
 func (b *Bucket) GetServices(
 	ctx context.Context,
 ) (map[string]yeoman.ServiceOpts, error) {
-	byt, err := b.get(ctx, nameServices)
+	names, err := b.list(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("get: %w", err)
+		return nil, fmt.Errorf("list: %w", err)
 	}
-	var opts map[string]yeoman.ServiceOpts
-	if err = json.Unmarshal(byt, &opts); err != nil {
-		return nil, fmt.Errorf("unmarshal: %w", err)
+	out := make(map[string]yeoman.ServiceOpts, len(names))
+	for _, name := range names {
+		byt, err := b.get(ctx, name)
+		if err != nil {
+			return nil, fmt.Errorf("get: %w", err)
+		}
+		var opts yeoman.ServiceOpts
+		if err = json.Unmarshal(byt, &opts); err != nil {
+			return nil, fmt.Errorf("unmarshal: %w", err)
+		}
+		out[name] = opts
 	}
-	return opts, nil
+	return out, nil
 }
 
 func (b *Bucket) SetServices(
 	ctx context.Context,
 	opts map[string]yeoman.ServiceOpts,
 ) error {
-	byt, err := json.Marshal(opts)
-	if err != nil {
-		return fmt.Errorf("marshal: %w", err)
-	}
-	if err = b.set(ctx, nameServices, byt); err != nil {
-		return fmt.Errorf("set: %w", err)
+	for serviceName, serviceOpts := range opts {
+		byt, err := json.Marshal(serviceOpts)
+		if err != nil {
+			return fmt.Errorf("marshal: %w", err)
+		}
+		if err = b.set(ctx, serviceName, byt); err != nil {
+			return fmt.Errorf("set: %w", err)
+		}
 	}
 	return nil
 }
 
-func (b *Bucket) get(ctx context.Context, name string) ([]byte, error) {
-	client, err := storage.NewClient(ctx, option.WithHTTPClient(b.Client))
+func (b *Bucket) list(ctx context.Context) ([]string, error) {
+	client, err := storage.NewClient(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("new client: %w", err)
 	}
 	defer func() { _ = client.Close() }()
 
-	r, err := client.Bucket(nameBucket).Object(name).NewReader(ctx)
+	var names []string
+	it := client.Bucket(b.name).Objects(ctx, nil)
+	for {
+		objAttrs, err := it.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("next: %w", err)
+		}
+		names = append(names, objAttrs.Name)
+	}
+	return names, nil
+}
+
+func (b *Bucket) get(ctx context.Context, name string) ([]byte, error) {
+	client, err := storage.NewClient(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("new client: %w", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	r, err := client.Bucket(b.name).Object(name).NewReader(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("new reader: %w", err)
 	}
@@ -78,7 +106,7 @@ func (b *Bucket) set(ctx context.Context, name string, data []byte) error {
 	}
 	defer func() { _ = client.Close() }()
 
-	w := client.Bucket(nameBucket).Object(name).NewWriter(ctx)
+	w := client.Bucket(b.name).Object(name).NewWriter(ctx)
 
 	var closed bool
 	defer func() {
