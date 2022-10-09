@@ -1,16 +1,30 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"math/rand"
+	"net/http"
+	"net/netip"
 	"os"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/egtann/yeoman"
+	"github.com/hashicorp/go-multierror"
 )
+
+const configPath = "yeoman.json"
 
 func main() {
 	if err := run(); err != nil {
 		switch {
-		case errors.Is(err, emptyArgError{}):
+		case errors.Is(err, emptyArgError("")):
 			usage()
 		default:
 			fmt.Fprintln(os.Stderr, err.Error())
@@ -41,7 +55,7 @@ func run() error {
 		fmt.Println("v0.0.0-alpha")
 		return nil
 	case "", "help":
-		return emptyArgError{}
+		return emptyArgError("")
 	default:
 		return badArgError(arg)
 	}
@@ -54,16 +68,88 @@ type serviceOpts struct {
 }
 
 func service(args []string, opts serviceOpts) error {
-	arg, _ := parseArg(args)
+	arg, tail := parseArg(args)
 	switch arg {
 	case "create":
 		// Notifies the service over API.
+		return createService(tail, opts)
 	case "", "help":
-		return emptyServiceArgError{}
+		return emptyArgError("service [list|create|destroy]")
 	default:
 		return badArgError(arg)
 	}
 	return nil
+}
+
+func createService(args []string, opts serviceOpts) error {
+	arg, tail := parseArg(args)
+	switch arg {
+	case "", "help":
+		return emptyArgError("create service $NAME")
+	}
+	conf, err := parseConfig()
+	if err != nil {
+		return fmt.Errorf("parse config: %w", err)
+	}
+
+	minStr, maxStr, _ := strings.Cut(opts.minMax, ":")
+	min, err := strconv.Atoi(minStr)
+	if err != nil {
+		return fmt.Errorf("parse min: %w", err)
+	}
+	max := min
+	if maxStr != "" {
+		max, err = strconv.Atoi(maxStr)
+		if err != nil {
+			return fmt.Errorf("parse max: %w", err)
+		}
+	}
+	if min <= 0 {
+		return errors.New("min must be greater than 0")
+	}
+	if max < min {
+		return errors.New("max must be greater than min")
+	}
+	data := yeoman.ServiceOpts{
+		Name:      strings.Join(tail, " "),
+		Container: opts.containerName,
+		Min:       min,
+		Max:       max,
+	}
+	byt, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("marshal: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer func() { cancel() }()
+	client := http.Client{}
+
+	// Try all IPs in rotation, but randomize them each run.
+	ips := conf.IPs
+	rand.Shuffle(len(ips), func(i, j int) { ips[i], ips[j] = ips[j], ips[i] })
+
+	var errs error
+	for _, ip := range ips {
+		req, err := http.NewRequest(http.MethodPost,
+			fmt.Sprintf("http://%s", ip), bytes.NewReader(byt))
+		if err != nil {
+			return fmt.Errorf("new request: %w", err)
+		}
+		req = req.WithContext(ctx)
+		rsp, err := client.Do(req)
+		if err != nil {
+			return err
+		}
+		if err := responseOK(rsp); err != nil {
+			_ = req.Body.Close()
+			errs = multierror.Append(errs, err)
+			continue
+		}
+		_ = req.Body.Close()
+		return nil
+	}
+	return errs
 }
 
 // parseArg splits the arguments into a head and tail.
@@ -79,20 +165,25 @@ func parseArg(args []string) (string, []string) {
 }
 
 type config struct {
-	ip string
+	IPs []netip.Addr `json:"ips"`
 }
 
 func parseConfig() (config, error) {
+	var conf config
+	byt, err := os.ReadFile(configPath)
+	if err != nil {
+		return conf, fmt.Errorf("read file: %w", err)
+	}
+	if err := json.Unmarshal(byt, &conf); err != nil {
+		return conf, fmt.Errorf("unmarshal: %w", err)
+	}
+	return conf, nil
 }
 
-type emptyArgError struct{}
+type emptyArgError string
 
-func (e emptyArgError) Error() string { return "empty arg" }
-
-type emptyServiceArgError struct{}
-
-func (e emptyServiceArgError) Error() string {
-	return "usage: yeoman service [create|update|destroy] ..."
+func (e emptyArgError) Error() string {
+	return fmt.Sprintf("usage: yeoman %s", string(e))
 }
 
 type badArgError string
@@ -103,4 +194,13 @@ func (e badArgError) Error() string {
 
 func usage() {
 	fmt.Println(`usage: yeoman [init|service|deploy|status|version] ...`)
+}
+
+func responseOK(rsp *http.Response) error {
+	switch rsp.StatusCode {
+	case http.StatusOK, http.StatusCreated:
+		return nil
+	default:
+		return fmt.Errorf("unexpected status code: %d", rsp.StatusCode)
+	}
 }
