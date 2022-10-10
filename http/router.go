@@ -19,7 +19,6 @@ const (
 )
 
 type Router struct {
-	log     zerolog.Logger
 	store   yeoman.Store
 	handler http.Handler
 }
@@ -37,7 +36,7 @@ func NewRouter(opts RouterOpts) *Router {
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(60 * time.Second))
 
-	rt := &Router{log: opts.Log, store: opts.Store, handler: r}
+	rt := &Router{store: opts.Store, handler: r}
 	r.Get("/health", rt.getHealth)
 	r.Route("/services", func(r chi.Router) {
 		r.Get("/", e(rt.getServices))
@@ -91,6 +90,10 @@ func (rt *Router) postService(
 	if err != nil {
 		return nil, fmt.Errorf("get services: %w", err)
 	}
+	if _, exists := services[data.Name]; exists {
+		return nil, unprocessable(fmt.Errorf("%s exists", data.Name))
+	}
+
 	services[data.Name] = data
 	if err = rt.store.SetServices(ctx, services); err != nil {
 		return nil, fmt.Errorf("set services: %w", err)

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/go-multierror"
+	"github.com/rs/zerolog"
 	tf "github.com/thankful-ai/terrafirma"
 	"github.com/thankful-ai/terrafirma/gcp"
 )
@@ -16,17 +17,23 @@ import (
 // Server tracks the state of services, manages autoscaling, and handles
 // starting up and shutting down.
 type Server struct {
+	log      zerolog.Logger
 	store    Store
+	reporter Reporter
 	services []*Service
 }
 
 type ServerOpts struct {
-	Store Store
+	Log      zerolog.Logger
+	Store    Store
+	Reporter Reporter
 }
 
 func NewServer(opts ServerOpts) *Server {
 	return &Server{
-		store: opts.Store,
+		log:      opts.Log,
+		store:    opts.Store,
+		reporter: opts.Reporter,
 	}
 }
 
@@ -34,6 +41,8 @@ func (s *Server) Start(
 	ctx context.Context,
 	cloudProviders []tf.CloudProviderName,
 ) error {
+	s.log.Info().Msg("starting server")
+
 	opts, err := s.store.GetServices(ctx)
 	if err != nil {
 		return fmt.Errorf("get services: %w", err)
@@ -48,6 +57,9 @@ func (s *Server) Start(
 		}
 		switch parts[0] {
 		case "gcp":
+			s.log.Info().
+				Str("provider", "gcp").
+				Msg("using provider")
 			var (
 				project = parts[1]
 				region  = parts[2]
@@ -62,13 +74,14 @@ func (s *Server) Start(
 		}
 
 		for _, opt := range opts {
-			service := newService(terra, cp, opt)
+			s.log.Info().
+				Str("service", opt.Name).
+				Msg("starting service")
+			service := newService(s.log, terra, cp, s.reporter, opt)
 			service.start()
 			s.services = append(s.services, service)
 		}
 	}
-
-	// TODO(egtann) start the HTTP server
 	return nil
 }
 

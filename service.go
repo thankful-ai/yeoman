@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rs/zerolog"
 	tf "github.com/thankful-ai/terrafirma"
 )
 
@@ -46,18 +47,23 @@ type Service struct {
 	terra         *tf.Terrafirma
 	cloudProvider tf.CloudProviderName
 
-	errorReporter Reporter
+	log      zerolog.Logger
+	reporter Reporter
 
 	mu     sync.RWMutex
 	stopCh chan chan struct{}
 }
 
 func newService(
+	log zerolog.Logger,
 	terra *tf.Terrafirma,
 	cloudProvider tf.CloudProviderName,
+	reporter Reporter,
 	opts ServiceOpts,
 ) *Service {
 	return &Service{
+		log:           log,
+		reporter:      reporter,
 		terra:         terra,
 		cloudProvider: cloudProvider,
 		opts:          opts,
@@ -135,7 +141,7 @@ func movingAverageLoad(loads []float64) float64 {
 	return f / float64(len(loads))
 }
 
-// Start a monitor for each service which when started will pull down the
+// start a monitor for each service which when started will pull down the
 // current state for it.
 func (s *Service) start() {
 	s.stopCh = make(chan chan struct{})
@@ -148,7 +154,9 @@ func (s *Service) start() {
 		extraDelay   time.Duration
 	)
 	go func() {
-		defer func() { recoverPanic(s.errorReporter) }()
+		defer func() { recoverPanic(s.reporter) }()
+
+		s.log.Info().Msg("loop")
 		for {
 			select {
 			case stopped := <-s.stopCh:
@@ -171,7 +179,7 @@ func (s *Service) start() {
 				var err error
 				vms, err = s.teardownVMs(vms, opts.Max)
 				if err != nil {
-					s.errorReporter.Report(
+					s.reporter.Report(
 						fmt.Errorf("teardown vms above max: %w", err))
 				}
 				continue
@@ -179,7 +187,7 @@ func (s *Service) start() {
 				var err error
 				vms, err = s.startupVMs(opts, vms)
 				if err != nil {
-					s.errorReporter.Report(
+					s.reporter.Report(
 						fmt.Errorf("startup vms below min: %w", err))
 				}
 				continue
@@ -190,7 +198,7 @@ func (s *Service) start() {
 			for _, vm := range vms {
 				ip := internalIP(vm.vm)
 				if ip == "" {
-					s.errorReporter.Report(fmt.Errorf(
+					s.reporter.Report(fmt.Errorf(
 						"missing internal ip on vm: %s",
 						vm.vm.Name))
 					continue
@@ -201,7 +209,7 @@ func (s *Service) start() {
 				var err error
 				vm.stats, err = getStats(vm.vm)
 				if err != nil {
-					s.errorReporter.Report(fmt.Errorf(
+					s.reporter.Report(fmt.Errorf(
 						"get stats: %w", err))
 					vm.stats.healthy = false
 					vm.stats.load = 0
@@ -237,7 +245,7 @@ func (s *Service) start() {
 				var err error
 				vms, err = s.startupVMs(opts, vms)
 				if err != nil {
-					s.errorReporter.Report(
+					s.reporter.Report(
 						fmt.Errorf("startup vms autoscale: %w", err))
 				}
 				extraDelay = 3 * time.Second
@@ -246,7 +254,7 @@ func (s *Service) start() {
 				var err error
 				vms, err = s.autoscaleTeardownVMs(vms)
 				if err != nil {
-					s.errorReporter.Report(
+					s.reporter.Report(
 						fmt.Errorf("autoscale teardown vms: %w", err))
 				}
 				extraDelay = 3 * time.Second
@@ -395,10 +403,13 @@ func (s *Service) startupVMs(
 		},
 	}
 	for i := 0; i < toStart; i++ {
+		id, err := firstID(vms)
+		if err != nil {
+			return nil, fmt.Errorf("first id: %w", err)
+		}
 		plan[s.cloudProvider].Create = append(
 			plan[s.cloudProvider].Create, &tf.VMTemplate{
-				// TODO(egtann) come up with a name for these
-				VMName:      "",
+				VMName:      fmt.Sprintf("ym-%s-%d", s.opts.Name, id),
 				BoxName:     boxName,
 				Image:       "projects/cos-cloud/global/images/family/cos-stable",
 				MachineType: opts.MachineType,
@@ -458,7 +469,7 @@ func (s *Service) startupVMs(
 	for _, vm := range vms {
 		vm := vm // Capture reference
 		go func() {
-			defer func() { recoverPanic(s.errorReporter) }()
+			defer func() { recoverPanic(s.reporter) }()
 			_, err := getStatsContext(ctx, vm.vm)
 			errs <- err
 		}()
@@ -584,10 +595,10 @@ func internalIP(vm *tf.VM) string {
 // and exiting in this goroutine. Panics should never happen. If they do, we
 // want the program to report the issue, log it locally, and exit signalling an
 // error.
-func recoverPanic(errorReporter Reporter) {
+func recoverPanic(reporter Reporter) {
 	if r := recover(); r != nil {
 		fmt.Fprintf(os.Stderr, "panicked: %v", r)
-		errorReporter.Report(fmt.Errorf("panicked: %v", r))
+		reporter.Report(fmt.Errorf("panicked: %v", r))
 		os.Exit(1)
 	}
 }
