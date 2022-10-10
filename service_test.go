@@ -6,7 +6,7 @@ import (
 	"sort"
 	"testing"
 
-	tf "github.com/thankful-ai/terrafirma"
+	tf "github.com/egtann/yeoman/terrafirma"
 )
 
 func TestFirstID(t *testing.T) {
@@ -34,7 +34,7 @@ func TestFirstID(t *testing.T) {
 			vms := make([]*vmState, 0, len(tc.have))
 			for _, name := range tc.have {
 				vms = append(vms, &vmState{
-					VM: &tf.VM{
+					vm: &tf.VM{
 						Name: name,
 					},
 				})
@@ -55,19 +55,31 @@ func TestSortByHealthAndLoad(t *testing.T) {
 		want []*vmState
 	}
 	tcs := []testcase{{
-		have: []*vmState{{Healthy: true}, {Healthy: false}},
-		want: []*vmState{{Healthy: false}, {Healthy: true}},
-	}, {
-		have: []*vmState{{Load: 1}, {Load: 0}},
-		want: []*vmState{{Load: 0}, {Load: 1}},
-	}, {
 		have: []*vmState{
-			{Healthy: true, Load: 1},
-			{Healthy: false, Load: 0},
+			{stats: stats{healthy: true}},
+			{stats: stats{healthy: false}},
 		},
 		want: []*vmState{
-			{Healthy: false, Load: 0},
-			{Healthy: true, Load: 1},
+			{stats: stats{healthy: false}},
+			{stats: stats{healthy: true}},
+		},
+	}, {
+		have: []*vmState{
+			{stats: stats{load: 1}},
+			{stats: stats{load: 0}},
+		},
+		want: []*vmState{
+			{stats: stats{load: 0}},
+			{stats: stats{load: 1}},
+		},
+	}, {
+		have: []*vmState{
+			{stats: stats{healthy: true, load: 1}},
+			{stats: stats{healthy: false, load: 0}},
+		},
+		want: []*vmState{
+			{stats: stats{healthy: false, load: 0}},
+			{stats: stats{healthy: true, load: 1}},
 		},
 	}}
 	for i, tc := range tcs {

@@ -10,8 +10,8 @@ import (
 	"github.com/egtann/yeoman"
 	"github.com/egtann/yeoman/google"
 	"github.com/egtann/yeoman/http"
+	tf "github.com/egtann/yeoman/terrafirma"
 	"github.com/rs/zerolog"
-	tf "github.com/thankful-ai/terrafirma"
 )
 
 func main() {

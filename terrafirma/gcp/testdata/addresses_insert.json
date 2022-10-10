@@ -1,0 +1,21 @@
+{
+    "id": "",
+    "creationTimestamp": "",
+    "name": "tf-ip-1",
+    "description": "",
+    "address": "",
+    "prefixLength": 1,
+    "status": "PENDING",
+    "region": "",
+    "selfLink": "/operations/1",
+    "users": [
+        ""
+    ],
+    "networkTier": "",
+    "ipVersion": "IPV4",
+    "addressType": "INTERNAL",
+    "purpose": "",
+    "subnetwork": "",
+    "network": "",
+    "kind": ""
+}

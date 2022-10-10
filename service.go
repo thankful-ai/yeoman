@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
+	tf "github.com/egtann/yeoman/terrafirma"
 	"github.com/rs/zerolog"
-	tf "github.com/thankful-ai/terrafirma"
 )
 
 // TODO(egtann) perhaps copy Heroku's p95 response time metric, rather than

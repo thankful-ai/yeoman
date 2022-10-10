@@ -1,0 +1,21 @@
+{
+    "id": "",
+    "creationTimestamp": "",
+    "name": "",
+    "description": "",
+    "address": "",
+    "prefixLength": 1,
+    "status": "PENDING",
+    "region": "",
+    "selfLink": "",
+    "users": [
+        ""
+    ],
+    "networkTier": "",
+    "ipVersion": "IPV4",
+    "addressType": "INTERNAL",
+    "purpose": "",
+    "subnetwork": "",
+    "network": "",
+    "kind": ""
+}

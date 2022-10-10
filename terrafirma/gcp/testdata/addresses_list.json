@@ -1,0 +1,38 @@
+{
+    "id": "",
+    "items": [
+        {
+            "id": "",
+            "creationTimestamp": "",
+            "name": "",
+            "description": "",
+            "address": "",
+            "prefixLength": 1,
+            "status": "RESERVED",
+            "region": "",
+            "selfLink": "",
+            "users": [
+                ""
+            ],
+            "ipVersion": "",
+            "addressType": "INTERNAL",
+            "purpose": "",
+            "subnetwork": "",
+            "network": "",
+            "kind": ""
+        }
+    ],
+    "nextPageToken": "",
+    "warning": {
+        "code": "",
+        "message": "",
+        "data": [
+            {
+                "key": "",
+                "value": ""
+            }
+        ]
+    },
+    "selfLink": "",
+    "kind": ""
+}

@@ -1,0 +1,122 @@
+{
+    "id": "",
+    "creationTimestamp": "",
+    "name": "tf-vm-1",
+    "description": "",
+    "tags": {
+        "items": [
+            ""
+        ],
+        "fingerprint": ""
+    },
+    "machineType": "/n1-standard-1",
+    "status": "RUNNING",
+    "statusMessage": "",
+    "zone": "",
+    "canIpForward": false,
+    "networkInterfaces": [
+        {
+            "network": "",
+            "subnetwork": "",
+            "networkIP": "10.0.0.1",
+            "name": "",
+            "accessConfigs": [
+                {
+                    "type": "ONE_TO_ONE_NAT",
+                    "name": "",
+                    "natIP": "1.1.1.1",
+                    "setPublicPtr": false,
+                    "publicPtrDomainName": "",
+                    "networkTier": "PREMIUM",
+                    "kind": ""
+                }
+            ],
+            "aliasIpRanges": [
+                {
+                    "ipCidrRange": "",
+                    "subnetworkRangeName": ""
+                }
+            ],
+            "fingerprint": "",
+            "kind": ""
+        }
+    ],
+    "disks": [
+        {
+            "type": "PERSISTENT",
+            "mode": "READ_WRITE",
+            "source": "",
+            "deviceName": "",
+            "index": 1,
+            "boot": false,
+            "diskSizeGb": "100",
+            "autoDelete": false,
+            "licenses": [
+                ""
+            ],
+            "interface": "SCSI",
+            "diskEncryptionKey": {
+                "rawKey": "",
+                "kmsKeyName": "",
+                "sha256": ""
+            },
+            "kind": ""
+        }
+    ],
+    "metadata": {
+        "fingerprint": "",
+        "items": [
+            {
+                "key": "",
+                "value": ""
+            }
+        ],
+        "kind": ""
+    },
+    "serviceAccounts": [
+        {
+            "email": "",
+            "scopes": [
+                ""
+            ]
+        }
+    ],
+    "selfLink": "",
+    "scheduling": {
+        "onHostMaintenance": "MIGRATE",
+        "automaticRestart": false,
+        "preemptible": false
+    },
+    "cpuPlatform": "",
+    "labels": {},
+    "labelFingerprint": "",
+    "minCpuPlatform": "",
+    "guestAccelerators": [
+        {
+            "acceleratorType": "gpu-1",
+            "acceleratorCount": 1
+        }
+    ],
+    "startRestricted": false,
+    "deletionProtection": false,
+    "reservationAffinity": {
+        "consumeReservationType": "ANY_RESERVATION",
+        "key": "",
+        "values": [
+            ""
+        ]
+    },
+    "hostname": "",
+    "displayDevice": {
+        "enableDisplay": false
+    },
+    "shieldedInstanceConfig": {
+        "enableSecureBoot": false,
+        "enableVtpm": false,
+        "enableIntegrityMonitoring": false
+    },
+    "shieldedInstanceIntegrityPolicy": {
+        "updateAutoLearnPolicy": false
+    },
+    "kind": ""
+}

@@ -1,0 +1,23 @@
+{
+    "id": "",
+    "creationTimestamp": "",
+    "name": "",
+    "zone": "",
+    "clientOperationId": "",
+    "operationType": "",
+    "targetLink": "",
+    "targetId": "",
+    "status": "PENDING",
+    "statusMessage": "",
+    "user": "",
+    "progress": 1,
+    "insertTime": "",
+    "startTime": "",
+    "endTime": "",
+    "httpErrorStatusCode": 1,
+    "httpErrorMessage": "",
+    "selfLink": "/operations/1",
+    "region": "",
+    "description": "",
+    "kind": ""
+}

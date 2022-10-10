@@ -6,7 +6,8 @@ require (
 	cloud.google.com/go/storage v1.25.0
 	github.com/go-chi/chi v1.5.4
 	github.com/hashicorp/go-multierror v1.1.1
-	github.com/thankful-ai/terrafirma v0.0.0-20210730011432-32729e0eb810
+	github.com/rs/zerolog v1.28.0
+	google.golang.org/api v0.94.0
 )
 
 require (
@@ -23,14 +24,12 @@ require (
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.16 // indirect
 	github.com/rs/xid v1.4.0 // indirect
-	github.com/rs/zerolog v1.28.0 // indirect
 	go.opencensus.io v0.23.0 // indirect
 	golang.org/x/net v0.0.0-20220826154423-83b083e8dc8b // indirect
 	golang.org/x/oauth2 v0.0.0-20220822191816-0ebed06d0094 // indirect
 	golang.org/x/sys v0.0.0-20221006211917-84dc82d7e875 // indirect
 	golang.org/x/text v0.3.7 // indirect
 	golang.org/x/xerrors v0.0.0-20220609144429-65e65417b02f // indirect
-	google.golang.org/api v0.94.0 // indirect
 	google.golang.org/appengine v1.6.7 // indirect
 	google.golang.org/genproto v0.0.0-20220822174746-9e6da59bd2fc // indirect
 	google.golang.org/grpc v1.49.0 // indirect

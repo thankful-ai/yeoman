@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
+	tf "github.com/egtann/yeoman/terrafirma"
+	"github.com/egtann/yeoman/terrafirma/gcp"
 	"github.com/hashicorp/go-multierror"
 	"github.com/rs/zerolog"
-	tf "github.com/thankful-ai/terrafirma"
-	"github.com/thankful-ai/terrafirma/gcp"
 )
 
 // Server tracks the state of services, manages autoscaling, and handles
