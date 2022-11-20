@@ -52,7 +52,6 @@ func vmFromBox(boxes map[BoxName]*Box, vmTemplate *VMTemplate) (*VM, error) {
 	vm := &VM{
 		Name:        vmTemplate.VMName,
 		Tags:        vmTemplate.Tags,
-		IPs:         vmTemplate.IPs,
 		Image:       vmTemplate.Image,
 		AllowHTTP:   vmTemplate.AllowHTTP,
 		MachineType: box.MachineType,
@@ -136,48 +135,6 @@ func (t *Terrafirma) planProvider(
 	for _, destroy := range forDestroy {
 		if destroy.count == len(boxes) {
 			plan.Destroy = append(plan.Destroy, destroy.vm)
-		}
-	}
-
-	// If we're going to create servers, we'll need IPs. Get
-	// already-provisioned static IPs. If we don't have enough, we'll need
-	// to provision new ones and set placeholders for now.
-	ips, err := t.providers[name].GetStaticIPs(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("get static ips: %w", err)
-	}
-
-	// Assign IPs to any boxes which should be created
-	var externalIPs, internalIPs []*IP
-	for _, ip := range ips {
-		switch ip.Type {
-		case IPExternal:
-			externalIPs = append(externalIPs, ip)
-		case IPInternal:
-			internalIPs = append(internalIPs, ip)
-		default:
-			return nil, fmt.Errorf("unknown ip type: %s", ip.Type)
-		}
-	}
-	for i := range plan.Create {
-		vm := plan.Create[i]
-		if i < len(internalIPs) {
-			vm.IPs = append(vm.IPs, internalIPs[i])
-		} else {
-			n := rand.Intn(999999-100000) + 100000
-			vm.IPs = append(vm.IPs, &IP{
-				Name: Name("ip", "internal", n),
-				Type: IPInternal,
-			})
-		}
-		if i < len(externalIPs) {
-			vm.IPs = append(vm.IPs, externalIPs[i])
-		} else {
-			n := rand.Intn(999999-100000) + 100000
-			vm.IPs = append(vm.IPs, &IP{
-				Name: Name("ip", "external", n),
-				Type: IPExternal,
-			})
 		}
 	}
 
@@ -347,25 +304,10 @@ func (t *Terrafirma) createAllProvider(
 	boxes map[BoxName]*Box,
 	p *ProviderPlan,
 ) error {
-	// Create IPs first and merge with what we had before, creating a map
-	ips, err := t.createIPs(ctx, name, p)
-	if err != nil {
-		return fmt.Errorf("create ips: %w", err)
-	}
-	ipMap := map[string]*IP{}
-	for _, ip := range ips {
-		ipMap[ip.Name] = ip
-	}
-
-	// Now create VMs
 	errCh := make(chan error)
 	for i := 0; i < len(p.Create); i++ {
 		go func(i int) {
-			// Use our newly created IPs
 			vmTemplate := p.Create[i]
-			for j, oldIP := range vmTemplate.IPs {
-				vmTemplate.IPs[j] = ipMap[oldIP.Name]
-			}
 			vm, err := vmFromBox(boxes, vmTemplate)
 			if err != nil {
 				errCh <- fmt.Errorf("vm from box: %w", err)
@@ -385,41 +327,6 @@ func (t *Terrafirma) createAllProvider(
 		}
 	}
 	return nil
-}
-
-func (t *Terrafirma) createIPs(
-	ctx context.Context,
-	name CloudProviderName,
-	p *ProviderPlan,
-) ([]*IP, error) {
-	var (
-		ips   []*IP
-		count = 0
-		ipCh  = make(chan *IP)
-		errCh = make(chan error)
-	)
-	for _, vmTemplate := range p.Create {
-		for _, ip := range vmTemplate.IPs {
-			if ip.Addr != "" {
-				ips = append(ips, ip)
-				continue
-			}
-			count++
-			go t.createIP(ctx, name, ip.Name, ip.Type, ipCh, errCh)
-		}
-	}
-	for i := 0; i < count; i++ {
-		select {
-		case ip := <-ipCh:
-			ips = append(ips, ip)
-		case err := <-errCh:
-			return nil, err
-		case <-ctx.Done():
-			return nil, fmt.Errorf("create static ips: %w",
-				ctx.Err())
-		}
-	}
-	return ips, nil
 }
 
 func (t *Terrafirma) DestroyAll(
@@ -493,22 +400,6 @@ func (t *Terrafirma) Inventory() (map[CloudProviderName][]*VM, error) {
 		return nil, fmt.Errorf("get managed vms: %w", err)
 	}
 	return vms, nil
-}
-
-func (t *Terrafirma) createIP(
-	ctx context.Context,
-	providerName CloudProviderName,
-	ipName string,
-	typ IPType,
-	ipCh chan *IP,
-	errCh chan error,
-) {
-	ip, err := t.providers[providerName].CreateStaticIP(ctx, ipName, typ)
-	if err != nil {
-		errCh <- fmt.Errorf("insert %s address: %w", typ, err)
-		return
-	}
-	ipCh <- ip
 }
 
 func fingerprint(s string) (string, error) {

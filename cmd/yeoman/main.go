@@ -114,6 +114,9 @@ func createService(args []string, opts serviceOpts) error {
 	if max < min {
 		return errors.New("max must be greater than min")
 	}
+	if opts.containerName == "" {
+		return errors.New("empty container name")
+	}
 	data := yeoman.ServiceOpts{
 		Name:      arg,
 		Container: opts.containerName,

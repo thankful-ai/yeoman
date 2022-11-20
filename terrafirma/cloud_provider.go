@@ -20,12 +20,6 @@ type CloudProvider interface {
 
 	// CreateVM must hang until boot completes.
 	CreateVM(context.Context, *VM) error
-
-	// GetStaticIPs to be used by newly created VMs.
-	GetStaticIPs(context.Context) ([]*IP, error)
-
-	// CreateStaticIP reporting its address and type.
-	CreateStaticIP(_ context.Context, name string, _ IPType) (*IP, error)
 }
 
 // MockCloudProvider implements the CloudProvider interface for simplified
@@ -91,20 +85,4 @@ func (m *MockCloudProvider) CreateVM(ctx context.Context, vm *VM) error {
 func (m *MockCloudProvider) Delete(ctx context.Context, name string) error {
 	m.vals = append(m.vals, fmt.Sprintf("Delete %s", name))
 	return nil
-}
-
-func (m *MockCloudProvider) GetStaticIPs(context.Context) ([]*IP, error) {
-	m.vals = append(m.vals, "GetStaticIPs")
-	ip1 := &IP{Name: "i", Type: IPInternal}
-	ip2 := &IP{Name: "e", Type: IPExternal}
-	return []*IP{ip1, ip2}, nil
-}
-
-func (m *MockCloudProvider) CreateStaticIP(
-	ctx context.Context,
-	name string,
-	typ IPType,
-) (*IP, error) {
-	m.vals = append(m.vals, fmt.Sprintf("CreateStaticIP %s", name))
-	return &IP{Name: "1", Type: IPExternal}, nil
 }

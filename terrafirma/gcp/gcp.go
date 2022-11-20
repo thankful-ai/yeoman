@@ -155,112 +155,6 @@ func (g *GCP) GetAll(ctx context.Context) ([]*tf.VM, error) {
 	return vms, nil
 }
 
-func (g *GCP) CreateStaticIP(
-	ctx context.Context,
-	name string,
-	typ tf.IPType,
-) (*tf.IP, error) {
-	g.log.Info().Str("name", name).Msg("creating static ip")
-
-	var addrTyp addressType
-	switch typ {
-	case tf.IPInternal:
-		addrTyp = atInternal
-	case tf.IPExternal:
-		addrTyp = atExternal
-	default:
-		return nil, fmt.Errorf("unknown ip type: %s", typ)
-	}
-	reqData := struct {
-		Name        string      `json:"name"`
-		AddressType addressType `json:"addressType"`
-		IPVersion   string      `json:"ipVersion"`
-	}{
-		Name:        name,
-		AddressType: addrTyp,
-	}
-	byt, err := json.Marshal(reqData)
-	if err != nil {
-		return nil, fmt.Errorf("marshal: %w", err)
-	}
-	path := "/addresses"
-	byt, err = g.do(ctx, http.MethodPost, path, byt)
-	if err != nil {
-		return nil, fmt.Errorf("do %s: %w", path, err)
-	}
-	var opRespData struct {
-		SelfLink string `json:"selfLink"`
-	}
-	if err = json.Unmarshal(byt, &opRespData); err != nil {
-		return nil, fmt.Errorf("unmarshal poll resp: %w", err)
-	}
-	err = g.pollOperation(ctx, opRespData.SelfLink, reqData.Name)
-	if err != nil {
-		return nil, fmt.Errorf("poll operation: %w", err)
-	}
-
-	// Get the newly created IP address
-	path = fmt.Sprintf("/addresses/%s", reqData.Name)
-	byt, err = g.do(ctx, http.MethodGet, path, nil)
-	if err != nil {
-		return nil, fmt.Errorf("do %s: %w", path, err)
-	}
-	var addrRespData struct {
-		Address string `json:"address"`
-	}
-	if err = json.Unmarshal(byt, &addrRespData); err != nil {
-		return nil, fmt.Errorf("unmarshal: %w", err)
-	}
-	ip := &tf.IP{
-		Name: name,
-		Type: typ,
-		Addr: addrRespData.Address,
-	}
-
-	g.log.Info().Str("name", name).Msg("created static ip")
-	return ip, nil
-}
-
-func (g *GCP) GetStaticIPs(ctx context.Context) ([]*tf.IP, error) {
-	// Get an available static IP address for our soon-to-be-created box.
-	// We use static IPs to prevent surprise disasters in production, like
-	// when you reboot a reverse proxy and finding that its IP changed, but
-	// the DNS record has a 1-hour TTL.
-	params := url.Values{}
-	params.Set("filter", `(status = "RESERVED")`)
-	path := "/addresses?" + params.Encode()
-	byt, err := g.do(ctx, http.MethodGet, path, nil)
-	if err != nil {
-		return nil, fmt.Errorf("do %s: %w", path, err)
-	}
-	var respData struct {
-		Items []struct {
-			Name        string      `json:"name"`
-			Address     string      `json:"address"`
-			AddressType addressType `json:"addressType"`
-		} `json:"items"`
-	}
-	if err = json.Unmarshal(byt, &respData); err != nil {
-		g.log.Error().Str("func", "GetStaticIPs").Msg(string(byt))
-		return nil, fmt.Errorf("unmarshal: %w", err)
-	}
-	ips := make([]*tf.IP, len(respData.Items))
-	for i, item := range respData.Items {
-		ip := &tf.IP{Name: item.Name, Addr: item.Address}
-		switch item.AddressType {
-		case atInternal:
-			ip.Type = tf.IPInternal
-		case atExternal:
-			ip.Type = tf.IPExternal
-		default:
-			return nil, fmt.Errorf("unknown address type: %s",
-				item.AddressType)
-		}
-		ips[i] = ip
-	}
-	return ips, nil
-}
-
 func (g *GCP) CreateVM(ctx context.Context, vm *tf.VM) error {
 	g.log.Info().Str("name", vm.Name).Msg("creating vm")
 
@@ -472,31 +366,6 @@ func vmFromGoogle(v *vm) (*tf.VM, error) {
 // vmToGoogle will select the smallest possible machine type that satisfies the
 // CPU and memory requirements.
 func (g *GCP) vmToGoogle(v *tf.VM) (*vm, error) {
-	if v.IPs == nil {
-		return nil, errors.New("missing ips")
-	}
-
-	var internalIP, externalIP string
-	for _, ip := range v.IPs {
-		switch ip.Type {
-		case tf.IPInternal:
-			internalIP = ip.Addr
-		case tf.IPExternal:
-			externalIP = ip.Addr
-		default:
-			return nil, fmt.Errorf("unknown ip type: %s", ip.Type)
-		}
-		if internalIP != "" && externalIP != "" {
-			break
-		}
-	}
-	if internalIP == "" {
-		return nil, errors.New("missing internal ip")
-	}
-	if externalIP == "" {
-		return nil, errors.New("missing external ip")
-	}
-
 	var gpus []*guestAccelerator
 	if v.GPU != nil {
 		typ := fmt.Sprintf("projects/%s/zones/%s/acceleratorTypes/%s",
@@ -527,12 +396,10 @@ func (g *GCP) vmToGoogle(v *tf.VM) (*vm, error) {
 		}},
 		GuestAccelerators: gpus,
 		NetworkInterfaces: []*networkInterface{{
-			Network:   "global/networks/default",
-			NetworkIP: internalIP,
+			Network: "global/networks/default",
 			AccessConfigs: []*accessConfig{{
-				Type:  "ONE_TO_ONE_NAT",
-				Name:  "External NAT",
-				NatIP: externalIP,
+				Type: "ONE_TO_ONE_NAT",
+				Name: "External NAT",
 			}},
 		}},
 		Tags: tags{Items: v.Tags},
