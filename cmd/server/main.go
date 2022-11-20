@@ -60,5 +60,5 @@ type logReporter struct {
 }
 
 func (l logReporter) Report(err error) {
-	l.log.Error().Err(err)
+	l.log.Error().Err(err).Msg("reporting error")
 }

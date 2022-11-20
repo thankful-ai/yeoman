@@ -14,6 +14,7 @@ import (
 	"time"
 
 	tf "github.com/egtann/yeoman/terrafirma"
+	"github.com/rs/zerolog"
 )
 
 const gb = 1024
@@ -105,6 +106,7 @@ const (
 )
 
 type GCP struct {
+	log     zerolog.Logger
 	client  *http.Client
 	project string
 	region  string
@@ -113,8 +115,13 @@ type GCP struct {
 	url     string
 }
 
-func New(client *http.Client, project, region, zone, token string) *GCP {
+func New(
+	lg zerolog.Logger,
+	client *http.Client,
+	project, region, zone, token string,
+) *GCP {
 	return &GCP{
+		log:     lg,
 		client:  client,
 		project: project,
 		region:  region,
@@ -134,7 +141,7 @@ func (g *GCP) GetAll(ctx context.Context) ([]*tf.VM, error) {
 		Items []*vm `json:"items"`
 	}
 	if err := json.Unmarshal(byt, &data); err != nil {
-		fmt.Println(string(byt))
+		g.log.Error().Str("func", "GetAll").Msg(string(byt))
 		return nil, fmt.Errorf("unmarshal: %w", err)
 	}
 	var vms []*tf.VM
@@ -153,7 +160,7 @@ func (g *GCP) CreateStaticIP(
 	name string,
 	typ tf.IPType,
 ) (*tf.IP, error) {
-	fmt.Println("creating", name)
+	g.log.Info().Str("name", name).Msg("creating static ip")
 
 	var addrTyp addressType
 	switch typ {
@@ -210,7 +217,7 @@ func (g *GCP) CreateStaticIP(
 		Addr: addrRespData.Address,
 	}
 
-	fmt.Println("created", name)
+	g.log.Info().Str("name", name).Msg("created static ip")
 	return ip, nil
 }
 
@@ -234,7 +241,7 @@ func (g *GCP) GetStaticIPs(ctx context.Context) ([]*tf.IP, error) {
 		} `json:"items"`
 	}
 	if err = json.Unmarshal(byt, &respData); err != nil {
-		fmt.Println(string(byt))
+		g.log.Error().Str("func", "GetStaticIPs").Msg(string(byt))
 		return nil, fmt.Errorf("unmarshal: %w", err)
 	}
 	ips := make([]*tf.IP, len(respData.Items))
@@ -255,7 +262,7 @@ func (g *GCP) GetStaticIPs(ctx context.Context) ([]*tf.IP, error) {
 }
 
 func (g *GCP) CreateVM(ctx context.Context, vm *tf.VM) error {
-	fmt.Println("creating", vm.Name)
+	g.log.Info().Str("name", vm.Name).Msg("creating vm")
 
 	googleVM, err := g.vmToGoogle(vm)
 	if err != nil {
@@ -274,7 +281,7 @@ func (g *GCP) CreateVM(ctx context.Context, vm *tf.VM) error {
 		SelfLink string `json:"selfLink"`
 	}
 	if err := json.Unmarshal(byt, &respData); err != nil {
-		fmt.Println(string(byt))
+		g.log.Error().Str("func", "CreateVM").Msg(string(byt))
 		return fmt.Errorf("unmarshal: %w", err)
 	}
 	err = g.pollOperation(ctx, respData.SelfLink, vm.Name)
@@ -282,12 +289,12 @@ func (g *GCP) CreateVM(ctx context.Context, vm *tf.VM) error {
 		return fmt.Errorf("poll operation: %w", err)
 	}
 
-	fmt.Println("created", vm.Name)
+	g.log.Info().Str("name", vm.Name).Msg("created vm")
 	return nil
 }
 
 func (g *GCP) Delete(ctx context.Context, name string) error {
-	fmt.Println("deleting", name)
+	g.log.Info().Str("name", name).Msg("deleting vm")
 
 	path := fmt.Sprintf("/instances/%s", name)
 	byt, err := g.do(ctx, http.MethodDelete, path, nil)
@@ -298,7 +305,7 @@ func (g *GCP) Delete(ctx context.Context, name string) error {
 		SelfLink string `json:"selfLink"`
 	}
 	if err := json.Unmarshal(byt, &respData); err != nil {
-		fmt.Println(string(byt))
+		g.log.Error().Str("func", "Delete").Msg(string(byt))
 		return fmt.Errorf("unmarshal: %w", err)
 	}
 	err = g.pollOperation(ctx, respData.SelfLink, name)
@@ -306,7 +313,7 @@ func (g *GCP) Delete(ctx context.Context, name string) error {
 		return fmt.Errorf("poll operation: %w", err)
 	}
 
-	fmt.Println("destroyed", name)
+	g.log.Info().Str("name", name).Msg("deleted vm")
 	return nil
 }
 
@@ -316,7 +323,7 @@ func (g *GCP) pollOperation(ctx context.Context, path, name string) error {
 		return nil
 	}
 
-	fmt.Println("-- polling", name)
+	g.log.Debug().Str("name", name).Msg("polling")
 	byt, err := g.do(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return fmt.Errorf("do %s: %w", path, err)
@@ -334,7 +341,10 @@ func (g *GCP) pollOperation(ctx context.Context, path, name string) error {
 		HTTPErrorMessage string `json:"httpErrorMessage"`
 	}
 	if err := json.Unmarshal(byt, &respData); err != nil {
-		fmt.Println(string(byt))
+		g.log.Error().
+			Str("func", "pollOperation").
+			Str("name", name).
+			Msg(string(byt))
 		return fmt.Errorf("unmarshal: %w", err)
 	}
 	if respData.Error != nil {
@@ -587,8 +597,11 @@ func (g *GCP) do(
 	case http.StatusOK, http.StatusGone:
 		return byt, nil
 	default:
-		fmt.Println(uri)
-		fmt.Println(string(byt))
+		g.log.Error().
+			Str("uri", uri).
+			Str("method", method).
+			Int("statusCode", rsp.StatusCode).
+			Msg(string(byt))
 		return byt, fmt.Errorf("unexpected status code: %d",
 			rsp.StatusCode)
 	}

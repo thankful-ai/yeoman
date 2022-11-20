@@ -7,21 +7,23 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"time"
 
 	"github.com/egtann/yeoman"
+	"github.com/rs/zerolog"
 )
 
 var _ yeoman.Reporter = &Reporter{}
 
 type Reporter struct {
+	log     zerolog.Logger
 	service string
 	version string
 	url     string
 }
 
 type ReporterOpts struct {
+	Logger  zerolog.Logger
 	Service string
 	Version string
 	Project string
@@ -29,6 +31,7 @@ type ReporterOpts struct {
 
 func NewReporter(opts ReporterOpts) *Reporter {
 	return &Reporter{
+		log:     opts.Logger.With().Str("service", "google").Logger(),
 		service: opts.Service,
 		version: opts.Version,
 		url: fmt.Sprintf(
@@ -56,8 +59,10 @@ func (r *Reporter) Report(origErr error) {
 		Message: origErr.Error(),
 	}
 	logErr := func(origErr, reportErr error) {
-		fmt.Fprintf(os.Stderr, "failed to report error (%v): %v\n",
-			origErr, reportErr)
+		r.log.Error().
+			Str("originalError", origErr.Error()).
+			Err(reportErr).
+			Msg("failed to report error")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(),
@@ -87,7 +92,7 @@ func (r *Reporter) Report(origErr error) {
 		logErr(origErr, fmt.Errorf("unexpected status code: %d",
 			rsp.StatusCode))
 		byt, _ := io.ReadAll(rsp.Body)
-		fmt.Println(string(byt))
+		r.log.Error().Msg(string(byt))
 		return
 	}
 }

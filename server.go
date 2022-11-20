@@ -55,29 +55,28 @@ func (s *Server) Start(
 		if len(parts) != 4 {
 			return fmt.Errorf("invalid cloud provider: %s", cp)
 		}
+		providerLog := s.log.With().Str("provider", "gcp").Logger()
 		switch parts[0] {
 		case "gcp":
-			s.log.Info().
-				Str("provider", "gcp").
-				Msg("using provider")
 			var (
 				project = parts[1]
 				region  = parts[2]
 				zone    = parts[3]
 			)
 			// TODO(egtann) pass in token via function parameters.
-			tfGCP := gcp.New(HTTPClient(), project, region, zone,
-				os.Getenv("GCP_TOKEN"))
+			tfGCP := gcp.New(providerLog, HTTPClient(), project,
+				region, zone, os.Getenv("GCP_TOKEN"))
 			terra.WithProvider(cp, tfGCP)
 		default:
 			return fmt.Errorf("unknown cloud provider: %s", cp)
 		}
 
 		for _, opt := range opts {
-			s.log.Info().
+			serviceLog := providerLog.With().
 				Str("service", opt.Name).
-				Msg("starting service")
-			service := newService(s.log, terra, cp, s.reporter, opt)
+				Logger()
+			serviceLog.Info().Msg("starting service")
+			service := newService(serviceLog, terra, cp, s.reporter, opt)
 			service.start()
 			s.services = append(s.services, service)
 		}
