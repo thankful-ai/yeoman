@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-const prefix = "tf"
+const prefix = "ym"
 
 type Terrafirma struct {
 	providers map[CloudProviderName]CloudProvider

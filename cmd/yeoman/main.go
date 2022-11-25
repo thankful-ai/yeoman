@@ -37,6 +37,8 @@ func main() {
 func run() error {
 	minMax := flag.String("n", "1", "min and max of servers (e.g. 3:5)")
 	containerName := flag.String("c", "", "container name")
+	machineType := flag.String("m", "", "machine type (e.g. e2-micro)")
+	diskSizeGB := flag.Int("d", 10, "disk size in GB")
 	flag.Parse()
 
 	arg, tail := parseArg(flag.Args())
@@ -47,6 +49,8 @@ func run() error {
 		return service(tail, serviceOpts{
 			minMax:        *minMax,
 			containerName: *containerName,
+			machineType:   *machineType,
+			diskSizeGB:    *diskSizeGB,
 		})
 	case "deploy":
 		return nil
@@ -66,6 +70,8 @@ type serviceOpts struct {
 	// minMax in the form of "3:5".
 	minMax        string
 	containerName string
+	machineType   string
+	diskSizeGB    int
 }
 
 func service(args []string, opts serviceOpts) error {
@@ -118,10 +124,13 @@ func createService(args []string, opts serviceOpts) error {
 		return errors.New("empty container name")
 	}
 	data := yeoman.ServiceOpts{
-		Name:      arg,
-		Container: opts.containerName,
-		Min:       min,
-		Max:       max,
+		Name:        arg,
+		Container:   opts.containerName,
+		MachineType: opts.machineType,
+		DiskSizeGB:  opts.diskSizeGB,
+		Version:     1,
+		Min:         min,
+		Max:         max,
 	}
 	byt, err := json.Marshal(data)
 	if err != nil {

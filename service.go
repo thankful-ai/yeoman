@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/egtann/yeoman/terrafirma"
 	tf "github.com/egtann/yeoman/terrafirma"
 	"github.com/rs/zerolog"
 )
@@ -77,8 +78,9 @@ func newService(
 type ServiceOpts struct {
 	Name        string `json:"name"`
 	Container   string `json:"container"`
-	Version     string `json:"version"`
+	Version     int    `json:"version"`
 	MachineType string `json:"machineType"`
+	DiskSizeGB  int    `json:"diskSizeGB"`
 	AllowHTTP   bool   `json:"allowHTTP"`
 
 	// Min and Max are the only two mutable values once a service has been
@@ -98,6 +100,7 @@ func (s *Service) CopyOpts() ServiceOpts {
 		Min:         s.opts.Min,
 		Max:         s.opts.Max,
 		MachineType: s.opts.MachineType,
+		DiskSizeGB:  s.opts.DiskSizeGB,
 		AllowHTTP:   s.opts.AllowHTTP,
 	}
 }
@@ -149,7 +152,6 @@ func (s *Service) start() {
 	// This represents state of the service that's discovered and managed by
 	// this monitoring process.
 	var (
-		vms          []*vmState
 		loadAverages []float64
 		extraDelay   time.Duration
 	)
@@ -170,12 +172,24 @@ func (s *Service) start() {
 				extraDelay = 0
 			}
 
+			// Get current number of VMs
+			vms, err := s.getVMs()
+			if err != nil {
+				s.reporter.Report(
+					fmt.Errorf("get vms: %w", err))
+				continue
+			}
+
 			// If we don't have the right count, then we need to
 			// update first before measuring max load. We can only
 			// operate on a copy to avoid race conditions.
 			opts := s.CopyOpts()
 			switch {
 			case len(vms) > opts.Max:
+				s.log.Info().
+					Int("want", opts.Max).
+					Int("have", len(vms)).
+					Msg("too many vms, tearing down")
 				var err error
 				vms, err = s.teardownVMs(vms, opts.Max)
 				if err != nil {
@@ -184,6 +198,10 @@ func (s *Service) start() {
 				}
 				continue
 			case len(vms) < opts.Min:
+				s.log.Info().
+					Int("want", opts.Min).
+					Int("have", len(vms)).
+					Msg("too few vms, starting up")
 				var err error
 				vms, err = s.startupVMs(opts, vms)
 				if err != nil {
@@ -220,17 +238,25 @@ func (s *Service) start() {
 			// Use the moving average across 5 time periods to
 			// determine the true load, rather than a snapshot
 			// moment in time. We want to scale up under sustained
-			// load, not a flash in the pan, since it'll take longer
-			// to boot a new VM than just processing the web request
-			// in most circumstances.
+			// load, not a flash in the pan, since it'll take
+			// longer to boot a new VM than just processing the web
+			// request in most circumstances.
 			avg := averageVMLoad(vms)
 			loadAverages = append(loadAverages, avg)
-			if len(loadAverages) > 5 {
+			if len(loadAverages) < 5 {
+				// We don't have enough data yet.
+				continue
+			} else {
 				loadAverages = loadAverages[1:]
 			}
 			movingAvg := movingAverageLoad(loadAverages)
 			switch {
 			case movingAvg > scaleUpAverageLoad:
+				s.log.Info().
+					Float64("scaleUpAverageLoad", scaleUpAverageLoad).
+					Float64("movingAverage", movingAvg).
+					Msg("autoscale starting up vms")
+
 				// We scale up more servers synchronously.
 				// While scaling is taking place, we can't
 				// continue, since we'll scale up to the max
@@ -251,6 +277,11 @@ func (s *Service) start() {
 				extraDelay = 3 * time.Second
 				continue
 			case movingAvg < scaleDownAverageLoad:
+				s.log.Info().
+					Float64("scaleDownAverageLoad", scaleDownAverageLoad).
+					Float64("movingAverage", movingAvg).
+					Msg("autoscale tearing down vms")
+
 				var err error
 				vms, err = s.autoscaleTeardownVMs(vms)
 				if err != nil {
@@ -264,6 +295,19 @@ func (s *Service) start() {
 	}()
 }
 
+func (s *Service) getVMs() ([]*vmState, error) {
+	inventory, err := s.terra.Inventory()
+	if err != nil {
+		return nil, fmt.Errorf("inventory: %w", err)
+	}
+	tfVMs := inventory[s.cloudProvider]
+	vms := make([]*vmState, 0, len(tfVMs))
+	for _, tfVM := range tfVMs {
+		vms = append(vms, &vmState{vm: tfVM})
+	}
+	return vms, nil
+}
+
 func getStatsContext(ctx context.Context, vm *tf.VM) (stats, error) {
 	var zero stats
 
@@ -272,7 +316,7 @@ func getStatsContext(ctx context.Context, vm *tf.VM) (stats, error) {
 		return zero, errors.New("missing internal ip")
 	}
 
-	uri := fmt.Sprintf("%s/health", ip)
+	uri := fmt.Sprintf("http://%s/health", ip)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
 	if err != nil {
 		return zero, fmt.Errorf("new request with context: %w", err)
@@ -388,15 +432,14 @@ func (s *Service) startupVMs(
 			boxName: &tf.Box{
 				Name:        tf.BoxName(opts.Name),
 				MachineType: opts.MachineType,
+				Disk:        terrafirma.DatasizeGB(opts.DiskSizeGB),
 				Image:       "projects/cos-cloud/global/images/family/cos-stable",
 				AllowHTTP:   opts.AllowHTTP,
 			},
 		},
 	}
 
-	// TODO(egtann) create IPs if needed
 	toStart := opts.Min - len(vms)
-
 	plan := map[tf.CloudProviderName]*tf.ProviderPlan{
 		s.cloudProvider: &tf.ProviderPlan{
 			Create: make([]*tf.VMTemplate, 0, toStart),
@@ -415,8 +458,6 @@ func (s *Service) startupVMs(
 				MachineType: opts.MachineType,
 				AllowHTTP:   opts.AllowHTTP,
 				Tags:        s.tags(),
-
-				// TODO(egtann) IPs here
 			})
 	}
 	if err := s.terra.CreateAll(boxes, plan); err != nil {
@@ -445,7 +486,7 @@ func (s *Service) startupVMs(
 			}
 			if parts[0] != "ym" ||
 				parts[1] != opts.Name ||
-				parts[2] != opts.Version {
+				parts[2] != strconv.Itoa(opts.Version) {
 				continue
 			}
 			vms = append(vms, &vmState{vm: vm})
@@ -526,7 +567,7 @@ func (s *Service) tags() []string {
 	return []string{
 		prefix("n", s.opts.Name),
 		prefix("c", s.opts.Container),
-		prefix("v", s.opts.Version),
+		prefix("v", strconv.Itoa(s.opts.Version)),
 		prefix("m", s.opts.MachineType),
 		prefix("a", strconv.FormatBool(s.opts.AllowHTTP)),
 	}

@@ -70,3 +70,7 @@ func (d datasize) String() string {
 	}
 	return "invalid datasize"
 }
+
+func DatasizeGB(n int) datasize {
+	return datasize(n * 1024)
+}

@@ -63,7 +63,6 @@ func (s *Server) Start(
 				region  = parts[2]
 				zone    = parts[3]
 			)
-			// TODO(egtann) pass in token via function parameters.
 			tfGCP := gcp.New(providerLog, HTTPClient(), project,
 				region, zone, os.Getenv("GCP_TOKEN"))
 			terra.WithProvider(cp, tfGCP)

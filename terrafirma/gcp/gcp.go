@@ -15,6 +15,7 @@ import (
 
 	tf "github.com/egtann/yeoman/terrafirma"
 	"github.com/rs/zerolog"
+	"golang.org/x/oauth2/google"
 )
 
 const gb = 1024
@@ -449,7 +450,18 @@ func (g *GCP) do(
 		return nil, fmt.Errorf("new request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+g.token)
+
+	creds, err := google.FindDefaultCredentials(ctx,
+		"https://www.googleapis.com/auth/compute")
+	if err != nil {
+		return nil, fmt.Errorf("find default credentials: %w", err)
+	}
+	token, err := creds.TokenSource.Token()
+	if err != nil {
+		return nil, fmt.Errorf("token: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+
 	rsp, err := g.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("do %s: %w", uri, err)

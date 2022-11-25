@@ -154,5 +154,4 @@ https://github.com/mco-gh/gcslock -> using Google Cloud bucket as a mutex!
 
 1. Install gcloud.
 1. Run: `gcloud auth application-default login`
-
-	> TODO(egtann) figure out a better mechanism for easy deployment.
+1. Connect Docker to your Google Container Registry: `gcloud auth configure-docker`
