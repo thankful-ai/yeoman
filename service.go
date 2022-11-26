@@ -196,6 +196,10 @@ func (s *Service) start() {
 					s.reporter.Report(
 						fmt.Errorf("teardown vms above max: %w", err))
 				}
+
+				// It takes quite a bit longer to shutdown VMs
+				// than to boot them.
+				extraDelay = 30 * time.Second
 				continue
 			case len(vms) < opts.Min:
 				s.log.Info().
@@ -208,6 +212,10 @@ func (s *Service) start() {
 					s.reporter.Report(
 						fmt.Errorf("startup vms below min: %w", err))
 				}
+
+				// Give ourselves extra time for the container
+				// to download and boot.
+				extraDelay = 10 * time.Second
 				continue
 			}
 
@@ -274,7 +282,7 @@ func (s *Service) start() {
 					s.reporter.Report(
 						fmt.Errorf("startup vms autoscale: %w", err))
 				}
-				extraDelay = 3 * time.Second
+				extraDelay = 10 * time.Second
 				continue
 			case movingAvg < scaleDownAverageLoad:
 				s.log.Info().
@@ -288,7 +296,7 @@ func (s *Service) start() {
 					s.reporter.Report(
 						fmt.Errorf("autoscale teardown vms: %w", err))
 				}
-				extraDelay = 3 * time.Second
+				extraDelay = 30 * time.Second
 				continue
 			}
 		}

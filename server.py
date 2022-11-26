@@ -3,7 +3,7 @@ import os
 import socketserver
 
 
-PORT = os.environ.get('PORT', 80)
+PORT = os.environ.get('PORT', 3000)
 
 
 class RequestHandler(http.server.SimpleHTTPRequestHandler):

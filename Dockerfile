@@ -4,4 +4,6 @@ WORKDIR /opt/app/
 
 COPY . /opt/app/
 
+EXPOSE 3000
+
 ENTRYPOINT ["python", "./server.py"]

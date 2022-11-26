@@ -18,29 +18,28 @@ import (
 	"golang.org/x/oauth2/google"
 )
 
-const containerDeclaration = `
-spec:
-  containers:
-    - image: us-central1-docker.pkg.dev/personal-199119/yeoman-dev/healthy:latest
-      name: healthy
-      securityContext:
-        privileged: false
-      stdin: false
-      tty: false
-      volumeMounts: []
-      restartPolicy: Always
-      volumes: []`
-
 const cloudConfig = `#cloud-config
 
+write_files:
+- path: /etc/systemd/system/cloudservice.service
+  permissions: 0644
+  owner: root
+  content: |
+    [Unit]
+    Description=Start a simple docker container
+    Wants=gcr-online.target
+    After=gcr-online.target
+
+    [Service]
+    Environment="HOME=/home/cloudservice"
+    ExecStartPre=/usr/bin/docker-credential-gcr configure-docker --registries us-central1-docker.pkg.dev
+    ExecStart=/usr/bin/docker run -t -p 80:3000 --name=healthy us-central1-docker.pkg.dev/personal-199119/yeoman-dev/healthy:latest
+    ExecStop=/usr/bin/docker stop healthy
+    ExecStopPost=/usr/bin/docker rm healthy
+
 runcmd:
-- docker-credential-gcr configure-docker --registries us-central1-docker.pkg.dev
-- docker run
-	--rm
-	--detach
-	--name=healthy
-	--expose=80
-	%s`
+- systemctl daemon-reload
+- systemctl start cloudservice.service`
 
 const gb = 1024
 
@@ -50,7 +49,7 @@ type vm struct {
 	Disks             []*disk             `json:"disks"`
 	GuestAccelerators []*guestAccelerator `json:"guestAccelerators,omitempty"`
 	NetworkInterfaces []*networkInterface `json:"networkInterfaces,omitempty"`
-	ServiceAccounts   []*serviceAccount   `json:"serviceAccount,omitempty"`
+	ServiceAccounts   []*serviceAccount   `json:"serviceAccounts,omitempty"`
 	Status            string              `json:"status,omitempty"`
 	Tags              tags                `json:"tags,omitempty"`
 	Scheduling        *scheduling         `json:"scheduling,omitempty"`
@@ -130,7 +129,7 @@ type accessConfig struct {
 
 type serviceAccount struct {
 	Email  string   `json:"email"`
-	Scopes []string `json:"scopes"`
+	Scopes []string `json:"scopes,omitempty"`
 }
 
 type addressType string
@@ -141,29 +140,39 @@ const (
 )
 
 type GCP struct {
-	log     zerolog.Logger
-	client  *http.Client
-	project string
-	region  string
-	zone    string
-	token   string
-	url     string
+	log           zerolog.Logger
+	client        *http.Client
+	project       string
+	projectNumber string
+	region        string
+	zone          string
+	url           string
 }
 
 func New(
 	lg zerolog.Logger,
 	client *http.Client,
-	project, region, zone, token string,
-) *GCP {
-	return &GCP{
+	project, region, zone string,
+) (*GCP, error) {
+	g := &GCP{
 		log:     lg,
 		client:  client,
 		project: project,
 		region:  region,
 		zone:    zone,
-		token:   token,
 		url:     "https://compute.googleapis.com/compute/v1",
 	}
+
+	ctx, cancel := context.WithTimeout(context.Background(),
+		10*time.Second)
+	defer cancel()
+
+	var err error
+	g.projectNumber, err = g.getProjectNumber(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get project number: %w", err)
+	}
+	return g, nil
 }
 
 func (g *GCP) GetAll(ctx context.Context) ([]*tf.VM, error) {
@@ -442,14 +451,25 @@ func (g *GCP) vmToGoogle(v *tf.VM) (*vm, error) {
 			OnHostMaintenance: onHostMaintenanceMigrate,
 			AutomaticRestart:  true,
 		},
+		ServiceAccounts: []*serviceAccount{{
+			Email: fmt.Sprintf(
+				"%s-compute@developer.gserviceaccount.com",
+				g.projectNumber,
+			),
+
+			// These are the default scopes for Compute Engine VMs:
+			// https://cloud.google.com/compute/docs/access/service-accounts#default_scopes
+			Scopes: []string{
+				"https://www.googleapis.com/auth/devstorage.read_only",
+				"https://www.googleapis.com/auth/logging.write",
+				"https://www.googleapis.com/auth/monitoring.write",
+				"https://www.googleapis.com/auth/trace.append",
+			},
+		}},
 		Metadata: &metadata{
 			Items: []keyValue{{
-				Key:   "gce-container-declaration",
-				Value: containerDeclaration,
-				/*
-					Key:   "user-data",
-					Value: fmt.Sprintf(cloudConfig, "us-central1-docker.pkg.dev/personal-199119/yeoman-dev/healthy:latest"),
-				*/
+				Key:   "user-data",
+				Value: cloudConfig,
 			}},
 		},
 	}
@@ -528,4 +548,22 @@ func (g *GCP) do(
 		return byt, fmt.Errorf("unexpected status code: %d",
 			rsp.StatusCode)
 	}
+}
+
+// getProjectNumber converts from a project ID (e.g. "my-project-123") to a
+// number which Google uses to identify its service account.
+func (g *GCP) getProjectNumber(ctx context.Context) (string, error) {
+	const path = "https://cloudresourcemanager.googleapis.com/v1/projects/%s"
+	byt, err := g.do(ctx, http.MethodGet, fmt.Sprintf(path, g.project),
+		nil)
+	if err != nil {
+		return "", fmt.Errorf("do %s: %w", path, err)
+	}
+	var data struct {
+		ProjectNumber string `json:"projectNumber"`
+	}
+	if err = json.Unmarshal(byt, &data); err != nil {
+		return "", fmt.Errorf("unmarshal: %w", err)
+	}
+	return data.ProjectNumber, nil
 }

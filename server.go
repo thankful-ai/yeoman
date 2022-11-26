@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -63,8 +62,11 @@ func (s *Server) Start(
 				region  = parts[2]
 				zone    = parts[3]
 			)
-			tfGCP := gcp.New(providerLog, HTTPClient(), project,
-				region, zone, os.Getenv("GCP_TOKEN"))
+			tfGCP, err := gcp.New(providerLog, HTTPClient(),
+				project, region, zone)
+			if err != nil {
+				return fmt.Errorf("gcp new: %w", err)
+			}
 			terra.WithProvider(cp, tfGCP)
 		default:
 			return fmt.Errorf("unknown cloud provider: %s", cp)
