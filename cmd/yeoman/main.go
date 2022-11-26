@@ -39,6 +39,7 @@ func run() error {
 	containerName := flag.String("c", "", "container name")
 	machineType := flag.String("m", "", "machine type (e.g. e2-micro)")
 	diskSizeGB := flag.Int("d", 10, "disk size in GB")
+	allowHTTP := flag.Bool("http", false, "allow http")
 	flag.Parse()
 
 	arg, tail := parseArg(flag.Args())
@@ -51,6 +52,7 @@ func run() error {
 			containerName: *containerName,
 			machineType:   *machineType,
 			diskSizeGB:    *diskSizeGB,
+			allowHTTP:     *allowHTTP,
 		})
 	case "deploy":
 		return nil
@@ -72,6 +74,7 @@ type serviceOpts struct {
 	containerName string
 	machineType   string
 	diskSizeGB    int
+	allowHTTP     bool
 }
 
 func service(args []string, opts serviceOpts) error {
@@ -128,9 +131,10 @@ func createService(args []string, opts serviceOpts) error {
 		Container:   opts.containerName,
 		MachineType: opts.machineType,
 		DiskSizeGB:  opts.diskSizeGB,
-		Version:     1,
+		AllowHTTP:   opts.allowHTTP,
 		Min:         min,
 		Max:         max,
+		Version:     1,
 	}
 	byt, err := json.Marshal(data)
 	if err != nil {

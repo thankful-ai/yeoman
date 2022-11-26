@@ -1,0 +1,10 @@
+#cloud-config
+
+runcmd:
+- docker-credential-gcr configure-docker --registries us-central1-docker.pkg.dev
+- docker run
+	--rm
+	--detach
+	--name=healthy
+	--publish=127.0.0.1:80:80
+	us-central1-docker.pkg.dev/personal-199119/yeoman-dev/healthy:latest

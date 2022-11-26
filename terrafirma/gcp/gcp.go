@@ -18,6 +18,30 @@ import (
 	"golang.org/x/oauth2/google"
 )
 
+const containerDeclaration = `
+spec:
+  containers:
+    - image: us-central1-docker.pkg.dev/personal-199119/yeoman-dev/healthy:latest
+      name: healthy
+      securityContext:
+        privileged: false
+      stdin: false
+      tty: false
+      volumeMounts: []
+      restartPolicy: Always
+      volumes: []`
+
+const cloudConfig = `#cloud-config
+
+runcmd:
+- docker-credential-gcr configure-docker --registries us-central1-docker.pkg.dev
+- docker run
+	--rm
+	--detach
+	--name=healthy
+	--expose=80
+	%s`
+
 const gb = 1024
 
 type vm struct {
@@ -30,6 +54,16 @@ type vm struct {
 	Status            string              `json:"status,omitempty"`
 	Tags              tags                `json:"tags,omitempty"`
 	Scheduling        *scheduling         `json:"scheduling,omitempty"`
+	Metadata          *metadata           `json:"metadata,omitempty"`
+}
+
+type metadata struct {
+	Items []keyValue `json:"items"`
+}
+
+type keyValue struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
 }
 
 type scheduling struct {
@@ -407,6 +441,16 @@ func (g *GCP) vmToGoogle(v *tf.VM) (*vm, error) {
 		Scheduling: &scheduling{
 			OnHostMaintenance: onHostMaintenanceMigrate,
 			AutomaticRestart:  true,
+		},
+		Metadata: &metadata{
+			Items: []keyValue{{
+				Key:   "gce-container-declaration",
+				Value: containerDeclaration,
+				/*
+					Key:   "user-data",
+					Value: fmt.Sprintf(cloudConfig, "us-central1-docker.pkg.dev/personal-199119/yeoman-dev/healthy:latest"),
+				*/
+			}},
 		},
 	}
 
