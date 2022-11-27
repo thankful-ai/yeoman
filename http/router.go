@@ -64,7 +64,7 @@ func (rt *Router) getServices(
 
 	/*
 		ctx := r.Context()
-		services, err := rt.store.GetServices(ctx, data)
+		services, err := rt.store.GetServices(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("get services: %w", err)
 		}
@@ -168,21 +168,21 @@ func (rt *Router) deleteService(
 	w http.ResponseWriter,
 	r *http.Request,
 ) (interface{}, error) {
-	return nil, errors.New("not implemented")
+	name := chi.URLParam(r, "name")
+	ctx := r.Context()
+	services, err := rt.store.GetServices(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get services: %w", err)
+	}
 
-	/*
-		name := chi.URLParam(r, "name")
-		ctx := r.Context()
-		services, err := rt.store.GetServices(ctx, data)
-		if err != nil {
-			return nil, fmt.Errorf("get services: %w", err)
-		}
-		if _, ok := services[name]; !ok {
-			return nil, notFound(errors.New("service does not exist"))
-		}
-		delete(services, name)
-		return nil, nil
-	*/
+	if _, ok := services[name]; !ok {
+		return nil, notFound(errors.New("service does not exist"))
+	}
+	if err = rt.store.DeleteService(ctx, name); err != nil {
+		return nil, fmt.Errorf("delete service: %w", err)
+	}
+	delete(services, name)
+	return nil, nil
 }
 
 func (rt *Router) getService(
@@ -194,7 +194,7 @@ func (rt *Router) getService(
 	/*
 		name := chi.URLParam(r, "name")
 		ctx := r.Context()
-		services, err := rt.store.GetServices(ctx, data)
+		services, err := rt.store.GetServices(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("get services: %w", err)
 		}
@@ -216,7 +216,7 @@ func (rt *Router) deployService(
 	/*
 		name := chi.URLParam(r, "name")
 		ctx := r.Context()
-		services, err := rt.store.GetServices(ctx, data)
+		services, err := rt.store.GetServices(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("get services: %w", err)
 		}

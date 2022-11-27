@@ -163,3 +163,12 @@ $ gcloud compute instances create ym-abc-1 \
 	--image-project cos-cloud \
 	--tags=http-server \
 	--metadata-from-file user-data=cloud-init
+
+TODO:
+- version should be the docker image ID from `docker images`?
+- restructure service bucket file json to have a list of versions, not just one
+- handle deploying a new version, identify when nothing has changed
+- automatically reboot all machines every 24 hours
+- wire in the reverse proxy, check machine health, route around bad machines
+- incorporate the docker commands into the yeoman cli? such that deploying will
+  automatically run `docker push` and set the tag for you?

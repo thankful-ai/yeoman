@@ -83,6 +83,8 @@ func service(args []string, opts serviceOpts) error {
 	case "create":
 		// Notifies the service over API.
 		return createService(tail, opts)
+	case "destroy":
+		return destroyService(tail, opts)
 	case "", "help":
 		return emptyArgError("service [list|create|destroy]")
 	default:
@@ -91,6 +93,7 @@ func service(args []string, opts serviceOpts) error {
 	return nil
 }
 
+// TODO(egtann) validate that the name is URL-safe.
 func createService(args []string, opts serviceOpts) error {
 	arg, tail := parseArg(args)
 	switch arg {
@@ -160,12 +163,58 @@ func createService(args []string, opts serviceOpts) error {
 		}
 		if err := responseOK(rsp); err != nil {
 			byt, _ := io.ReadAll(rsp.Body)
-			_ = req.Body.Close()
+			_ = rsp.Body.Close()
 			errs = multierror.Append(errs,
 				fmt.Errorf("%s: %w: %s", ip, err, string(byt)))
 			continue
 		}
-		_ = req.Body.Close()
+		_ = rsp.Body.Close()
+		return nil
+	}
+	return errs
+}
+
+func destroyService(args []string, opts serviceOpts) error {
+	arg, tail := parseArg(args)
+	switch arg {
+	case "", "help":
+		return emptyArgError("create service $NAME")
+	}
+	if len(tail) > 0 {
+		return errors.New("too many arguments")
+	}
+	serviceName := arg
+
+	conf, err := parseConfig()
+	if err != nil {
+		return fmt.Errorf("parse config: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer func() { cancel() }()
+	client := http.Client{}
+
+	var errs error
+	for _, ip := range conf.IPs {
+		req, err := http.NewRequest(http.MethodDelete,
+			fmt.Sprintf("http://%s/services/%s", ip, serviceName),
+			nil)
+		if err != nil {
+			return fmt.Errorf("new request: %w", err)
+		}
+		req = req.WithContext(ctx)
+		rsp, err := client.Do(req)
+		if err != nil {
+			return err
+		}
+		if err := responseOK(rsp); err != nil {
+			byt, _ := io.ReadAll(rsp.Body)
+			_ = rsp.Body.Close()
+			errs = multierror.Append(errs,
+				fmt.Errorf("%s: %w: %s", ip, err, string(byt)))
+			continue
+		}
+		_ = rsp.Body.Close()
 		return nil
 	}
 	return errs

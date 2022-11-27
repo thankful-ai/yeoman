@@ -22,8 +22,14 @@ type Server struct {
 	reporter   Reporter
 	services   []*Service
 	serviceSet map[string]struct{}
-	mu         sync.Mutex
-	stop       chan struct{}
+
+	// serviceShutdownCh receives signals from a service that it is
+	// shutting down, so that the server can remove it from the set and
+	// list of services.
+	serviceShutdownCh chan string
+
+	mu   sync.Mutex
+	stop chan struct{}
 }
 
 type ServerOpts struct {
@@ -34,11 +40,12 @@ type ServerOpts struct {
 
 func NewServer(opts ServerOpts) *Server {
 	return &Server{
-		log:        opts.Log,
-		store:      opts.Store,
-		reporter:   opts.Reporter,
-		serviceSet: map[string]struct{}{},
-		stop:       make(chan struct{}),
+		log:               opts.Log,
+		store:             opts.Store,
+		reporter:          opts.Reporter,
+		serviceSet:        map[string]struct{}{},
+		serviceShutdownCh: make(chan string),
+		stop:              make(chan struct{}),
 	}
 }
 
@@ -47,6 +54,29 @@ func (s *Server) Start(
 	cloudProviders []tf.CloudProviderName,
 ) error {
 	s.log.Info().Msg("starting server")
+
+	// Start listening for services which are being shutdown.
+	go func() {
+		for {
+			select {
+			case name := <-s.serviceShutdownCh:
+				s.mu.Lock()
+				delete(s.serviceSet, name)
+				newServices := make([]*Service, 0,
+					len(s.services)-1)
+				for _, srv := range s.services {
+					if srv.opts.Name != name {
+						newServices = append(
+							newServices, srv)
+					}
+				}
+				s.services = newServices
+				s.mu.Unlock()
+			case <-s.stop:
+				return
+			}
+		}
+	}()
 
 	opts, err := s.store.GetServices(ctx)
 	if err != nil {
@@ -79,22 +109,23 @@ func (s *Server) Start(
 		}
 
 		addService := func(opt ServiceOpts) {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+
+			if _, exist := s.serviceSet[opt.Name]; exist {
+				return
+			}
 			serviceLog := providerLog.With().
 				Str("service", opt.Name).
 				Logger()
+			serviceLog.Info().
+				Str("name", opt.Name).
+				Msg("discovered service")
 			service := newService(serviceLog, terra, cp,
-				s.reporter, opt)
+				s.store, s.reporter, s.serviceShutdownCh, opt)
 			service.start()
-
-			s.mu.Lock()
-			if _, exist := s.serviceSet[opt.Name]; !exist {
-				s.log.Info().
-					Str("name", opt.Name).
-					Msg("discovered service")
-				s.serviceSet[opt.Name] = struct{}{}
-				s.services = append(s.services, service)
-			}
-			s.mu.Unlock()
+			s.serviceSet[opt.Name] = struct{}{}
+			s.services = append(s.services, service)
 		}
 
 		// Continually look for newly created services.
@@ -107,51 +138,16 @@ func (s *Server) Start(
 						context.Background(),
 						10*time.Second)
 					opts, err := s.store.GetServices(ctx)
+					cancel()
 					if err != nil {
-						cancel()
 						err = fmt.Errorf("get services: %w", err)
 						s.reporter.Report(err)
 						return
 					}
-					cancel()
 
-					// Add all services, and mark these as
-					// things to keep.
-					keep := map[string]struct{}{}
 					for _, opt := range opts {
 						addService(opt)
-						keep[opt.Name] = struct{}{}
 					}
-
-					// Now delete any which don't exist any
-					// longer.
-					//
-					// TODO(egtann) this logic doesn't make
-					// sense.
-					s.mu.Lock()
-					for _, srv := range s.services {
-						ctx, cancel = context.WithTimeout(
-							context.Background(),
-							30*time.Second)
-						_, exist := keep[srv.CopyOpts().Name]
-						if !exist {
-							cancel()
-							continue
-						}
-						srv.stop(ctx)
-						cancel()
-					}
-					s.mu.Unlock()
-
-					// TODO(egtann) identify services which
-					// have been deleted or updated. Do a
-					// proper sync? Or do I just want to
-					// synchronously notify? Can't really
-					// do that since we would need some
-					// transaction mechnism ... but I can
-					// send a signal to at least refresh
-					// immediately -- if it's missed that's
-					// ok.
 				case <-s.stop:
 					return
 				}
@@ -163,9 +159,9 @@ func (s *Server) Start(
 
 func (s *Server) Shutdown(ctx context.Context) error {
 	errs := make(chan error, len(s.services))
-	for _, s := range s.services {
+	for _, srv := range s.services {
 		go func() {
-			if err := s.stop(ctx); err != nil {
+			if err := srv.stop(ctx); err != nil {
 				errs <- err
 			}
 		}()
@@ -182,5 +178,5 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		}
 	}
 	close(s.stop)
-	return result
+	return result.ErrorOrNil()
 }

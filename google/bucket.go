@@ -3,8 +3,10 @@ package google
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"sync"
 
 	"cloud.google.com/go/storage"
 	"github.com/egtann/yeoman"
@@ -13,15 +15,42 @@ import (
 
 var _ yeoman.Store = &Bucket{}
 
-type Bucket struct{ name string }
+type Bucket struct {
+	name string
+	mu   sync.RWMutex
+}
 
 func NewBucket(name string) *Bucket {
 	return &Bucket{name: name}
 }
 
+func (b *Bucket) GetService(
+	ctx context.Context,
+	name string,
+) (yeoman.ServiceOpts, error) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	var opts yeoman.ServiceOpts
+	byt, err := b.get(ctx, name)
+	switch {
+	case errors.Is(err, storage.ErrObjectNotExist):
+		return opts, yeoman.Missing
+	case err != nil:
+		return opts, fmt.Errorf("get: %w", err)
+	}
+	if err = json.Unmarshal(byt, &opts); err != nil {
+		return opts, fmt.Errorf("unmarshal: %w", err)
+	}
+	return opts, nil
+}
+
 func (b *Bucket) GetServices(
 	ctx context.Context,
 ) (map[string]yeoman.ServiceOpts, error) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
 	names, err := b.list(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list: %w", err)
@@ -45,6 +74,9 @@ func (b *Bucket) SetServices(
 	ctx context.Context,
 	opts map[string]yeoman.ServiceOpts,
 ) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	for serviceName, serviceOpts := range opts {
 		byt, err := json.Marshal(serviceOpts)
 		if err != nil {
@@ -121,6 +153,19 @@ func (b *Bucket) set(ctx context.Context, name string, data []byte) error {
 	closed = true
 	if err = w.Close(); err != nil {
 		return fmt.Errorf("close: %w", err)
+	}
+	return nil
+}
+
+func (b *Bucket) DeleteService(ctx context.Context, name string) error {
+	client, err := storage.NewClient(ctx)
+	if err != nil {
+		return fmt.Errorf("new client: %w", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	if err := client.Bucket(b.name).Object(name).Delete(ctx); err != nil {
+		return fmt.Errorf("delete: %w", err)
 	}
 	return nil
 }

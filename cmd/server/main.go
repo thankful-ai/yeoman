@@ -5,6 +5,8 @@ import (
 	"fmt"
 	nethttp "net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/egtann/yeoman"
@@ -26,8 +28,9 @@ func run() error {
 
 	// TODO(egtann) make this a flag
 	store := google.NewBucket("yeoman-bucket")
+	reporter := logReporter{log: log}
 	server := yeoman.NewServer(yeoman.ServerOpts{
-		Reporter: logReporter{log: log},
+		Reporter: reporter,
 		Log:      log,
 		Store:    store,
 	})
@@ -42,6 +45,28 @@ func run() error {
 	if err := server.Start(ctx, providers); err != nil {
 		return fmt.Errorf("server start: %w", err)
 	}
+
+	// Handle shutdowns gracefully
+	go func() {
+		shutdown := make(chan os.Signal, 1)
+		signal.Notify(shutdown, syscall.SIGINT, syscall.SIGKILL,
+			syscall.SIGTERM)
+		for {
+			select {
+			case <-shutdown:
+				log.Info().Msg("shutting down...")
+				ctx, cancel := context.WithTimeout(
+					context.Background(), 30*time.Second)
+				defer cancel()
+				if err := server.Shutdown(ctx); err != nil {
+					err = fmt.Errorf("shutdown: %w", err)
+					reporter.Report(err)
+					os.Exit(1)
+				}
+				os.Exit(0)
+			}
+		}
+	}()
 
 	router := http.NewRouter(http.RouterOpts{
 		Log:   log,

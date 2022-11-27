@@ -12,7 +12,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/egtann/yeoman/terrafirma"
@@ -48,19 +47,28 @@ type Service struct {
 
 	terra         *tf.Terrafirma
 	cloudProvider tf.CloudProviderName
+	store         Store
 
 	log      zerolog.Logger
 	reporter Reporter
 
-	mu     sync.RWMutex
-	stopCh chan chan struct{}
+	// There are two ways to shutdown a service. The first is from the
+	// server shutting down and signalling that all services should stop,
+	// which is listened to on stopCh. The second mechanism is
+	// stopInternal, where the service itself realizes that it should no
+	// longer be running, such as when a service definition file is
+	// removed.
+	stopCh     chan chan struct{}
+	shutdownCh chan<- string
 }
 
 func newService(
 	log zerolog.Logger,
 	terra *tf.Terrafirma,
 	cloudProvider tf.CloudProviderName,
+	store Store,
 	reporter Reporter,
+	shutdownCh chan<- string,
 	opts ServiceOpts,
 ) *Service {
 	return &Service{
@@ -68,9 +76,11 @@ func newService(
 			Str("name", opts.Name).
 			Int("version", opts.Version).
 			Logger(),
-		reporter:      reporter,
 		terra:         terra,
 		cloudProvider: cloudProvider,
+		store:         store,
+		reporter:      reporter,
+		shutdownCh:    shutdownCh,
 		opts:          opts,
 	}
 }
@@ -93,22 +103,6 @@ type ServiceOpts struct {
 	Max int `json:"max"`
 }
 
-func (s *Service) CopyOpts() ServiceOpts {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	return ServiceOpts{
-		Name:        s.opts.Name,
-		Container:   s.opts.Container,
-		Version:     s.opts.Version,
-		Min:         s.opts.Min,
-		Max:         s.opts.Max,
-		MachineType: s.opts.MachineType,
-		DiskSizeGB:  s.opts.DiskSizeGB,
-		AllowHTTP:   s.opts.AllowHTTP,
-	}
-}
-
 type stats struct {
 	healthy bool
 	load    float64
@@ -117,13 +111,6 @@ type stats struct {
 type vmState struct {
 	stats stats
 	vm    *tf.VM
-}
-
-func (s *Service) UpdateOpts(opts ServiceOpts) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.opts = opts
 }
 
 func averageVMLoad(vms []*vmState) float64 {
@@ -168,11 +155,11 @@ func (s *Service) start() {
 				s.log.Debug().Msg("stopping service")
 				stopped <- struct{}{}
 				return
-			case <-time.After(3*time.Second + extraDelay):
-				// Wait 3 seconds before refreshing state, or
-				// extra time if scaling up or down to allow
-				// time for requests to be routed to the new
-				// VMs and adjust each servers' loads.
+			case <-time.After(100*time.Millisecond + extraDelay):
+				// Wait a bit before refreshing state, or extra
+				// time if scaling up or down to allow time for
+				// requests to be routed to the new VMs and
+				// adjust each servers' loads.
 				extraDelay = 0
 			}
 
@@ -184,10 +171,33 @@ func (s *Service) start() {
 				continue
 			}
 
-			// If we don't have the right count, then we need to
-			// update first before measuring max load. We can only
-			// operate on a copy to avoid race conditions.
-			opts := s.CopyOpts()
+			// Get the current service definition. If it's been
+			// deleted, then we need to shutdown all VMs and the
+			// service.
+			ctx, cancel := context.WithTimeout(
+				context.Background(), 10*time.Second)
+			opts, err := s.store.GetService(ctx, s.opts.Name)
+			cancel()
+			switch {
+			case errors.Is(err, Missing):
+				// Teardown the service and all VMs, since it
+				// was deleted, then notify the server that
+				// we've stopped.
+				s.log.Info().Msg("service removed, tearing down vms")
+				var err error
+				vms, err = s.autoscaleTeardownVMs(vms)
+				if err != nil {
+					s.reporter.Report(
+						fmt.Errorf("autoscale teardown vms: %w", err))
+				}
+				s.shutdownCh <- s.opts.Name
+				return
+			case err != nil:
+				s.reporter.Report(
+					fmt.Errorf("get service: %w", err))
+				continue
+			}
+
 			switch {
 			case len(vms) > opts.Max:
 				s.log.Info().
@@ -200,13 +210,6 @@ func (s *Service) start() {
 					s.reporter.Report(
 						fmt.Errorf("teardown vms above max: %w", err))
 				}
-
-				// TODO(egtann) investigate how we can discover
-				// when it's actually gone and poll for it
-				// instead.
-				//
-				// It takes a while to shutdown VMs.
-				extraDelay = 30 * time.Second
 				continue
 			case len(vms) < opts.Min:
 				s.log.Info().
@@ -222,25 +225,15 @@ func (s *Service) start() {
 
 				// Give ourselves extra time for the container
 				// to download and boot.
-				extraDelay = 30 * time.Second
+				//
+				// TODO(egtann) poll health for availability.
+				extraDelay = time.Minute
 				continue
-			}
-
-			// Ping our servers for their up-to-date load
-			// information and health, ensuring they're still here.
-			for _, vm := range vms {
-				ip := internalIP(vm.vm)
-				if ip == "" {
-					s.reporter.Report(fmt.Errorf(
-						"missing internal ip on vm: %s",
-						vm.vm.Name))
-					continue
-				}
 			}
 
 			for _, vm := range vms {
 				var err error
-				vm.stats, err = getStats(vm.vm)
+				vm.stats, err = getStats(vm.vm, 3*time.Second)
 				if err != nil {
 					s.reporter.Report(fmt.Errorf(
 						"get stats: %w", err))
@@ -289,7 +282,7 @@ func (s *Service) start() {
 					s.reporter.Report(
 						fmt.Errorf("startup vms autoscale: %w", err))
 				}
-				extraDelay = 10 * time.Second
+				extraDelay = time.Minute
 				continue
 			case movingAvg < scaleDownAverageLoad:
 				s.log.Info().
@@ -323,13 +316,55 @@ func (s *Service) getVMs() ([]*vmState, error) {
 	return vms, nil
 }
 
-func getStatsContext(ctx context.Context, vm *tf.VM) (stats, error) {
+func getStats(
+	vm *tf.VM,
+	timeout time.Duration,
+) (stats, error) {
 	var zero stats
 
 	ip := internalIP(vm)
 	if ip == "" {
 		return zero, errors.New("missing internal ip")
 	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	s, err := getStatsContextWithIP(ctx, vm, ip)
+	switch {
+	case errors.Is(err, context.DeadlineExceeded), os.IsTimeout(err):
+		// This frequently happens when the server isn't available, or
+		// when we're not on the right network. In either case, try
+		// again below with the external IP.
+	case err != nil:
+		return stats{}, fmt.Errorf("get stats internal: %w", err)
+	default:
+		return s, nil
+	}
+
+	// If our internal IP check fails, we may not be running yeoman on the
+	// same network. Check via the external IP as a fallback.
+	ip = externalIP(vm)
+	if ip == "" {
+		return zero, errors.New("missing external ip")
+	}
+
+	ctx2, cancel2 := context.WithTimeout(context.Background(), timeout)
+	defer cancel2()
+
+	s, err = getStatsContextWithIP(ctx2, vm, ip)
+	if err != nil {
+		return stats{}, fmt.Errorf("get stats external fallback: %w", err)
+	}
+	return s, nil
+}
+
+func getStatsContextWithIP(
+	ctx context.Context,
+	vm *tf.VM,
+	ip string,
+) (stats, error) {
+	var zero stats
 
 	uri := fmt.Sprintf("http://%s/health", ip)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
@@ -356,15 +391,23 @@ func getStatsContext(ctx context.Context, vm *tf.VM) (stats, error) {
 	return stats{healthy: true, load: data.Load}, nil
 }
 
-func getStats(vm *tf.VM) (stats, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+func pollUntilHealthy(vm *tf.VM, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	s, err := getStatsContext(ctx, vm)
-	if err != nil {
-		return stats{}, fmt.Errorf("get stats context: %w", err)
+	lastError := errors.New("timed out")
+	for {
+		select {
+		case <-ctx.Done():
+			return lastError
+		default:
+			if _, err := getStats(vm, timeout); err != nil {
+				lastError = fmt.Errorf("get stats: %w", err)
+				continue
+			}
+			return nil
+		}
 	}
-	return s, nil
 }
 
 func (s *Service) stop(ctx context.Context) error {
@@ -518,26 +561,17 @@ func (s *Service) startupVMs(
 	// number of goroutines to prevent too many file descriptors and
 	// maxing network IO?
 	errs := make(chan error, len(vms))
-	ctx, cancel := context.WithTimeout(context.Background(),
-		30*time.Second)
-	defer cancel()
-
 	for _, vm := range vms {
 		vm := vm // Capture reference
 		go func() {
 			defer func() { recoverPanic(s.reporter) }()
-			_, err := getStatsContext(ctx, vm.vm)
-			errs <- err
+			errs <- pollUntilHealthy(vm.vm, 30*time.Second)
 		}()
 	}
 	for i := 0; i < len(vms); i++ {
 		select {
 		case err := <-errs:
 			return nil, fmt.Errorf("get stats context: %w", err)
-		case <-ctx.Done():
-			return nil, fmt.Errorf(
-				"timed out waiting for health checks, %d/%d",
-				i+1, len(vms))
 		}
 	}
 
@@ -648,6 +682,15 @@ func HTTPClient() *http.Client {
 func internalIP(vm *tf.VM) string {
 	for _, ip := range vm.IPs {
 		if ip.Type == tf.IPInternal {
+			return ip.Addr
+		}
+	}
+	return ""
+}
+
+func externalIP(vm *tf.VM) string {
+	for _, ip := range vm.IPs {
+		if ip.Type == tf.IPExternal {
 			return ip.Addr
 		}
 	}
