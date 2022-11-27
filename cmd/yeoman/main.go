@@ -37,7 +37,7 @@ func main() {
 func run() error {
 	minMax := flag.String("n", "1", "min and max of servers (e.g. 3:5)")
 	containerName := flag.String("c", "", "container name")
-	machineType := flag.String("m", "", "machine type (e.g. e2-micro)")
+	machineType := flag.String("m", "e2-micro", "machine type")
 	diskSizeGB := flag.Int("d", 10, "disk size in GB")
 	allowHTTP := flag.Bool("http", false, "allow http")
 	flag.Parse()

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	tf "github.com/egtann/yeoman/terrafirma"
@@ -16,10 +17,13 @@ import (
 // Server tracks the state of services, manages autoscaling, and handles
 // starting up and shutting down.
 type Server struct {
-	log      zerolog.Logger
-	store    Store
-	reporter Reporter
-	services []*Service
+	log        zerolog.Logger
+	store      Store
+	reporter   Reporter
+	services   []*Service
+	serviceSet map[string]struct{}
+	mu         sync.Mutex
+	stop       chan struct{}
 }
 
 type ServerOpts struct {
@@ -30,9 +34,11 @@ type ServerOpts struct {
 
 func NewServer(opts ServerOpts) *Server {
 	return &Server{
-		log:      opts.Log,
-		store:    opts.Store,
-		reporter: opts.Reporter,
+		log:        opts.Log,
+		store:      opts.Store,
+		reporter:   opts.Reporter,
+		serviceSet: map[string]struct{}{},
+		stop:       make(chan struct{}),
 	}
 }
 
@@ -72,15 +78,85 @@ func (s *Server) Start(
 			return fmt.Errorf("unknown cloud provider: %s", cp)
 		}
 
-		for _, opt := range opts {
+		addService := func(opt ServiceOpts) {
 			serviceLog := providerLog.With().
 				Str("service", opt.Name).
 				Logger()
-			serviceLog.Info().Msg("starting service")
-			service := newService(serviceLog, terra, cp, s.reporter, opt)
+			service := newService(serviceLog, terra, cp,
+				s.reporter, opt)
 			service.start()
-			s.services = append(s.services, service)
+
+			s.mu.Lock()
+			if _, exist := s.serviceSet[opt.Name]; !exist {
+				s.log.Info().
+					Str("name", opt.Name).
+					Msg("discovered service")
+				s.serviceSet[opt.Name] = struct{}{}
+				s.services = append(s.services, service)
+			}
+			s.mu.Unlock()
 		}
+
+		// Continually look for newly created services.
+		go func() {
+			for {
+				select {
+				case <-time.After(3 * time.Second):
+					s.log.Debug().Msg("refreshing services")
+					ctx, cancel := context.WithTimeout(
+						context.Background(),
+						10*time.Second)
+					opts, err := s.store.GetServices(ctx)
+					if err != nil {
+						cancel()
+						err = fmt.Errorf("get services: %w", err)
+						s.reporter.Report(err)
+						return
+					}
+					cancel()
+
+					// Add all services, and mark these as
+					// things to keep.
+					keep := map[string]struct{}{}
+					for _, opt := range opts {
+						addService(opt)
+						keep[opt.Name] = struct{}{}
+					}
+
+					// Now delete any which don't exist any
+					// longer.
+					//
+					// TODO(egtann) this logic doesn't make
+					// sense.
+					s.mu.Lock()
+					for _, srv := range s.services {
+						ctx, cancel = context.WithTimeout(
+							context.Background(),
+							30*time.Second)
+						_, exist := keep[srv.CopyOpts().Name]
+						if !exist {
+							cancel()
+							continue
+						}
+						srv.stop(ctx)
+						cancel()
+					}
+					s.mu.Unlock()
+
+					// TODO(egtann) identify services which
+					// have been deleted or updated. Do a
+					// proper sync? Or do I just want to
+					// synchronously notify? Can't really
+					// do that since we would need some
+					// transaction mechnism ... but I can
+					// send a signal to at least refresh
+					// immediately -- if it's missed that's
+					// ok.
+				case <-s.stop:
+					return
+				}
+			}
+		}()
 	}
 	return nil
 }
@@ -105,5 +181,6 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			return errors.New("timeout")
 		}
 	}
+	close(s.stop)
 	return result
 }

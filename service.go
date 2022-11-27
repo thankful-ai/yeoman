@@ -2,6 +2,7 @@ package yeoman
 
 import (
 	"context"
+	"crypto/md5"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -63,7 +64,10 @@ func newService(
 	opts ServiceOpts,
 ) *Service {
 	return &Service{
-		log:           log,
+		log: log.With().
+			Str("name", opts.Name).
+			Int("version", opts.Version).
+			Logger(),
 		reporter:      reporter,
 		terra:         terra,
 		cloudProvider: cloudProvider,
@@ -158,10 +162,10 @@ func (s *Service) start() {
 	go func() {
 		defer func() { recoverPanic(s.reporter) }()
 
-		s.log.Info().Msg("loop")
 		for {
 			select {
 			case stopped := <-s.stopCh:
+				s.log.Debug().Msg("stopping service")
 				stopped <- struct{}{}
 				return
 			case <-time.After(3*time.Second + extraDelay):
@@ -197,8 +201,11 @@ func (s *Service) start() {
 						fmt.Errorf("teardown vms above max: %w", err))
 				}
 
-				// It takes quite a bit longer to shutdown VMs
-				// than to boot them.
+				// TODO(egtann) investigate how we can discover
+				// when it's actually gone and poll for it
+				// instead.
+				//
+				// It takes a while to shutdown VMs.
 				extraDelay = 30 * time.Second
 				continue
 			case len(vms) < opts.Min:
@@ -215,7 +222,7 @@ func (s *Service) start() {
 
 				// Give ourselves extra time for the container
 				// to download and boot.
-				extraDelay = 10 * time.Second
+				extraDelay = 30 * time.Second
 				continue
 			}
 
@@ -570,6 +577,13 @@ func (a byHealthAndLoad) Less(i, j int) bool {
 // responsible for transforming these tags to satisfy those requirements.
 func (s *Service) tags() []string {
 	prefix := func(typ, name string) string {
+		name = strings.NewReplacer(
+			"/", "-",
+			".", "-",
+		).Replace(name)
+		if len(name) >= 60 {
+			name = fmt.Sprintf("%x", md5.Sum([]byte(name)))
+		}
 		return fmt.Sprintf("ym-%s-%s", typ, name)
 	}
 	return []string{
