@@ -159,11 +159,13 @@ func (s *Server) Start(
 
 func (s *Server) Shutdown(ctx context.Context) error {
 	errs := make(chan error, len(s.services))
-	for _, srv := range s.services {
+	for _, service := range s.services {
 		go func() {
-			if err := srv.stop(ctx); err != nil {
+			if err := service.stop(ctx); err != nil {
 				errs <- err
+				return
 			}
+			errs <- nil
 		}()
 	}
 	var result *multierror.Error
@@ -178,5 +180,12 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		}
 	}
 	close(s.stop)
-	return result.ErrorOrNil()
+
+	err := result.ErrorOrNil()
+	if err == nil {
+		s.log.Debug().Msg("stopped server successfully")
+	} else {
+		s.log.Error().Err(err).Msg("stopped server with error")
+	}
+	return err
 }

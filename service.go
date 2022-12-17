@@ -154,6 +154,7 @@ func (s *Service) start() {
 			case stopped := <-s.stopCh:
 				s.log.Debug().Msg("stopping service")
 				stopped <- struct{}{}
+				s.log.Debug().Msg("stopped service")
 				return
 			case <-time.After(100*time.Millisecond + extraDelay):
 				// Wait a bit before refreshing state, or extra
@@ -412,8 +413,10 @@ func pollUntilHealthy(vm *tf.VM, timeout time.Duration) error {
 
 func (s *Service) stop(ctx context.Context) error {
 	if s.stopCh == nil {
+		// The service was never started.
 		return nil
 	}
+
 	stopped := make(chan struct{})
 	select {
 	case <-ctx.Done():

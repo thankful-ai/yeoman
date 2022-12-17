@@ -172,3 +172,4 @@ TODO:
 - wire in the reverse proxy, check machine health, route around bad machines
 - incorporate the docker commands into the yeoman cli? such that deploying will
   automatically run `docker push` and set the tag for you?
+	> don't use :latest, seems to be bad practice.

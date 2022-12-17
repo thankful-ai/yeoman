@@ -33,7 +33,7 @@ write_files:
     [Service]
     Environment="HOME=/home/cloudservice"
     ExecStartPre=/usr/bin/docker-credential-gcr configure-docker --registries us-central1-docker.pkg.dev
-    ExecStart=/usr/bin/docker run -t -p 80:3000 --name=healthy us-central1-docker.pkg.dev/personal-199119/yeoman-dev/healthy:latest
+    ExecStart=/usr/bin/docker run -t -p 80:3000 --name=healthy us-central1-docker.pkg.dev/personal-199119/yeoman-dev/healthy:v2
     ExecStop=/usr/bin/docker stop healthy
     ExecStopPost=/usr/bin/docker rm healthy
 
