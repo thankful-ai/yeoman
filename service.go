@@ -51,15 +51,6 @@ type Service struct {
 
 	log      zerolog.Logger
 	reporter Reporter
-
-	// There are two ways to shutdown a service. The first is from the
-	// server shutting down and signalling that all services should stop,
-	// which is listened to on stopCh. The second mechanism is
-	// stopInternal, where the service itself realizes that it should no
-	// longer be running, such as when a service definition file is
-	// removed.
-	stopCh     chan chan struct{}
-	shutdownCh chan<- string
 }
 
 func newService(
@@ -68,7 +59,6 @@ func newService(
 	cloudProvider tf.CloudProviderName,
 	store Store,
 	reporter Reporter,
-	shutdownCh chan<- string,
 	opts ServiceOpts,
 ) *Service {
 	return &Service{
@@ -80,7 +70,6 @@ func newService(
 		cloudProvider: cloudProvider,
 		store:         store,
 		reporter:      reporter,
-		shutdownCh:    shutdownCh,
 		opts:          opts,
 	}
 }
@@ -138,8 +127,6 @@ func movingAverageLoad(loads []float64) float64 {
 // start a monitor for each service which when started will pull down the
 // current state for it.
 func (s *Service) start() {
-	s.stopCh = make(chan chan struct{})
-
 	// This represents state of the service that's discovered and managed by
 	// this monitoring process.
 	var (
@@ -151,11 +138,6 @@ func (s *Service) start() {
 
 		for {
 			select {
-			case stopped := <-s.stopCh:
-				s.log.Debug().Msg("stopping service")
-				stopped <- struct{}{}
-				s.log.Debug().Msg("stopped service")
-				return
 			case <-time.After(100*time.Millisecond + extraDelay):
 				// Wait a bit before refreshing state, or extra
 				// time if scaling up or down to allow time for
@@ -183,7 +165,6 @@ func (s *Service) start() {
 			case errors.Is(err, Missing):
 				// The reaper will automatically clean up the
 				// services next time it runs.
-				s.shutdownCh <- s.opts.Name
 				return
 			case err != nil:
 				s.reporter.Report(
@@ -400,31 +381,6 @@ func pollUntilHealthy(vm *tf.VM, timeout time.Duration) error {
 			}
 			return nil
 		}
-	}
-}
-
-func (s *Service) stop(ctx context.Context, stopCh chan<- struct{}) error {
-	if s.stopCh == nil {
-		// The service was never started.
-		return nil
-	}
-
-	stopped := make(chan struct{})
-	select {
-	case <-ctx.Done():
-		return errors.New("failed to send stop signal")
-	case s.stopCh <- stopped:
-		// Wait on sending our signal that we want to stop. Once this
-		// happens, we'll keep going.
-	}
-
-	// We know that we sent the request to stop, so wait on the monitor to
-	// confirm that it has stopped.
-	select {
-	case <-ctx.Done():
-		return errors.New("did not receive stop confirmation")
-	case <-stopped:
-		return nil
 	}
 }
 

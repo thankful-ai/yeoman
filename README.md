@@ -164,6 +164,12 @@ $ gcloud compute instances create ym-abc-1 \
 	--tags=http-server \
 	--metadata-from-file user-data=cloud-init
 
+### Graceful Shutdown
+
+Doesn't appear to be needed. Any cloud will finish the tasks we issue via API
+without us waiting on them. Yeoman can rediscover the current state on next
+boot.
+
 TODO:
 - version should be the docker image ID from `docker images`?
 - restructure service bucket file json to have a list of versions, not just one
@@ -173,3 +179,6 @@ TODO:
 - incorporate the docker commands into the yeoman cli? such that deploying will
   automatically run `docker push` and set the tag for you?
 	> don't use :latest, seems to be bad practice.
+- think through command line interface
+
+

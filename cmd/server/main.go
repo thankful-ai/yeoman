@@ -52,20 +52,10 @@ func run() error {
 		shutdown := make(chan os.Signal, 1)
 		signal.Notify(shutdown, syscall.SIGINT, syscall.SIGKILL,
 			syscall.SIGTERM)
-		for {
-			select {
-			case <-shutdown:
-				log.Info().Msg("shutting down...")
-				ctx, cancel := context.WithTimeout(
-					context.Background(), 30*time.Second)
-				defer cancel()
-				if err := server.Shutdown(ctx); err != nil {
-					err = fmt.Errorf("shutdown: %w", err)
-					reporter.Report(err)
-					os.Exit(1)
-				}
-				os.Exit(0)
-			}
+		select {
+		case <-shutdown:
+			log.Info().Msg("shutting down...")
+			os.Exit(0)
 		}
 	}()
 

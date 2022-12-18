@@ -2,7 +2,6 @@ package yeoman
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -10,7 +9,6 @@ import (
 
 	tf "github.com/egtann/yeoman/terrafirma"
 	"github.com/egtann/yeoman/terrafirma/gcp"
-	"github.com/hashicorp/go-multierror"
 	"github.com/rs/zerolog"
 )
 
@@ -22,14 +20,7 @@ type Server struct {
 	reporter   Reporter
 	services   []*Service
 	serviceSet map[string]*Service
-
-	// serviceShutdownCh receives signals from a service that it is
-	// shutting down, so that the server can remove it from the set and
-	// list of services.
-	serviceShutdownCh chan string
-
-	mu   sync.RWMutex
-	stop chan struct{}
+	mu         sync.RWMutex
 }
 
 type ServerOpts struct {
@@ -40,12 +31,10 @@ type ServerOpts struct {
 
 func NewServer(opts ServerOpts) *Server {
 	return &Server{
-		log:               opts.Log,
-		store:             opts.Store,
-		reporter:          opts.Reporter,
-		serviceSet:        map[string]*Service{},
-		serviceShutdownCh: make(chan string),
-		stop:              make(chan struct{}),
+		log:        opts.Log,
+		store:      opts.Store,
+		reporter:   opts.Reporter,
+		serviceSet: map[string]*Service{},
 	}
 }
 
@@ -54,29 +43,6 @@ func (s *Server) Start(
 	cloudProviders []tf.CloudProviderName,
 ) error {
 	s.log.Info().Msg("starting server")
-
-	// Start listening for services which are being shutdown.
-	go func() {
-		for {
-			select {
-			case name := <-s.serviceShutdownCh:
-				s.mu.Lock()
-				delete(s.serviceSet, name)
-				newServices := make([]*Service, 0,
-					len(s.services)-1)
-				for _, srv := range s.services {
-					if srv.opts.Name != name {
-						newServices = append(
-							newServices, srv)
-					}
-				}
-				s.services = newServices
-				s.mu.Unlock()
-			case <-s.stop:
-				return
-			}
-		}
-	}()
 
 	opts, err := s.store.GetServices(ctx)
 	if err != nil {
@@ -119,8 +85,8 @@ func (s *Server) Start(
 				Str("service", opt.Name).
 				Logger()
 			serviceLog.Info().Msg("discovered service")
-			service := newService(serviceLog, terra, cp,
-				s.store, s.reporter, s.serviceShutdownCh, opt)
+			service := newService(serviceLog, terra, cp, s.store,
+				s.reporter, opt)
 			service.start()
 			s.serviceSet[opt.Name] = service
 			s.services = append(s.services, service)
@@ -139,16 +105,6 @@ func (s *Server) Start(
 			}
 			serviceLog.Info().Msg("reaping service")
 
-			ctx, cancel := context.WithTimeout(
-				context.Background(), 30*time.Second)
-			defer cancel()
-
-			stopped := make(chan struct{}, 1)
-			if err := service.stop(ctx, stopped); err != nil {
-				return fmt.Errorf("stop service: %w", err)
-			}
-			<-stopped
-			serviceLog.Debug().Msg("service stopped by reaper")
 			if err := service.teardownAllVMs(); err != nil {
 				return fmt.Errorf("teardown all vms: %w", err)
 			}
@@ -162,9 +118,8 @@ func (s *Server) Start(
 			s.services = services
 			return nil
 		}
-
 		reapOrphans := func() {
-			s.log.Debug().Msg("checking for orphans")
+			s.log.Debug().Msg("checking for orphaned vms")
 			inventory, err := terra.Inventory()
 			if err != nil {
 				err = fmt.Errorf("terrafirma inventory: %w", err)
@@ -194,7 +149,7 @@ func (s *Server) Start(
 						plan[cpName].Destroy, vm)
 					s.log.Info().
 						Str("vm", vm.Name).
-						Msg("found orphan")
+						Msg("found orphan vm")
 					toDelete = append(toDelete, vm.Name)
 				}
 			}
@@ -203,7 +158,7 @@ func (s *Server) Start(
 			}
 			s.log.Info().
 				Strs("names", toDelete).
-				Msg("reaping orphans")
+				Msg("reaping orphan vms")
 			if err := terra.DestroyAll(plan); err != nil {
 				err = fmt.Errorf("destroy all: %w", err)
 				s.reporter.Report(err)
@@ -211,99 +166,72 @@ func (s *Server) Start(
 			}
 			s.log.Debug().Msg("reaped orphans")
 		}
+		addRemoveServices := func(
+			oldOpts map[string]ServiceOpts,
+		) (map[string]ServiceOpts, error) {
+			if oldOpts == nil {
+				oldOpts = map[string]ServiceOpts{}
+			}
 
-		// Continually look for newly created services.
+			s.log.Debug().Msg("refreshing services")
+			ctx, cancel := context.WithTimeout(
+				context.Background(),
+				10*time.Second)
+			newOpts, err := s.store.GetServices(ctx)
+			cancel()
+			if err != nil {
+				return nil, fmt.Errorf("get services: %w", err)
+			}
+
+			for _, opt := range newOpts {
+				addService(opt)
+			}
+
+			// Find any marked for deletion.
+			for name := range oldOpts {
+				_, exist := newOpts[name]
+				if exist {
+					continue
+				}
+				err = removeService(name)
+				if err != nil {
+					return nil, fmt.Errorf("remove service: %w", err)
+				}
+			}
+			reapOrphans()
+
+			return newOpts, nil
+		}
+
+		// Continually look for newly created services and stop
+		// tracking old ones.
 		go func() {
 			defer func() { recoverPanic(s.reporter) }()
-			var lastOpts map[string]ServiceOpts
-			addRemoveServices := func() {
-				s.log.Debug().Msg("refreshing services")
-				ctx, cancel := context.WithTimeout(
-					context.Background(),
-					10*time.Second)
-				opts, err := s.store.GetServices(ctx)
-				cancel()
-				if err != nil {
-					err = fmt.Errorf("get services: %w", err)
-					s.reporter.Report(err)
-					return
-				}
-
-				for _, opt := range opts {
-					addService(opt)
-				}
-
-				// Find any marked for deletion.
-				for name := range lastOpts {
-					_, exist := opts[name]
-					if exist {
-						continue
-					}
-					err = removeService(name)
-					if err != nil {
-						err = fmt.Errorf("remove service: %w", err)
-						s.reporter.Report(err)
-						return
-					}
-				}
-				lastOpts = opts
-
-				reapOrphans()
-			}
 
 			// Add and remove services immediately, then re-check
 			// every few seconds. Reap any orphans once we've
 			// retrieved our services.
-			addRemoveServices()
+			opts, err := addRemoveServices(nil)
+			if err != nil {
+				err = fmt.Errorf("add remove services: %w", err)
+				s.reporter.Report(err)
+
+				// Keep going, don't return. We'll try again in
+				// a few seconds.
+			}
 			for {
 				select {
 				case <-time.After(3 * time.Second):
-					addRemoveServices()
-				case <-s.stop:
-					return
+					opts, err = addRemoveServices(opts)
+					if err != nil {
+						err = fmt.Errorf("add remove services: %w", err)
+						s.reporter.Report(err)
+
+						// Keep going.
+					}
 				}
 			}
 		}()
 	}
 	return nil
-}
-
-func (s *Server) Shutdown(ctx context.Context) error {
-	if len(s.services) == 0 {
-		close(s.stop)
-		return nil
-	}
-
-	errs := make(chan error, len(s.services))
-	for _, service := range s.services {
-		go func() {
-			stopCh := make(chan struct{}, 1)
-			if err := service.stop(ctx, stopCh); err != nil {
-				errs <- err
-				return
-			}
-			errs <- nil
-			<-stopCh
-		}()
-	}
-	var result *multierror.Error
-	for i := 0; i < len(s.services); i++ {
-		select {
-		case err := <-errs:
-			if err != nil {
-				result = multierror.Append(result, err)
-			}
-		case <-ctx.Done():
-			return errors.New("timeout")
-		}
-	}
-	close(s.stop)
-
-	err := result.ErrorOrNil()
-	if err == nil {
-		s.log.Debug().Msg("stopped server successfully")
-	} else {
-		s.log.Error().Err(err).Msg("stopped server with error")
-	}
-	return err
 }
