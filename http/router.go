@@ -60,17 +60,14 @@ func (rt *Router) getServices(
 	w http.ResponseWriter,
 	r *http.Request,
 ) (interface{}, error) {
-	return nil, errors.New("not implemented")
+	ctx := r.Context()
+	services, err := rt.store.GetServices(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get services: %w", err)
+	}
 
-	/*
-		ctx := r.Context()
-		services, err := rt.store.GetServices(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("get services: %w", err)
-		}
-		// TODO(egtann) should this also return current state? IPs, etc?
-		return services, nil
-	*/
+	// TODO(egtann) should this also return current state? IPs, etc?
+	return services, nil
 }
 
 func (rt *Router) postService(

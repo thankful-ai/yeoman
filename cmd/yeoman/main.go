@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -83,6 +84,8 @@ func service(args []string, opts serviceOpts) error {
 	case "create":
 		// Notifies the service over API.
 		return createService(tail, opts)
+	case "list":
+		return listServices()
 	case "destroy":
 		return destroyService(tail, opts)
 	case "", "help":
@@ -215,6 +218,62 @@ func destroyService(args []string, opts serviceOpts) error {
 			continue
 		}
 		_ = rsp.Body.Close()
+		return nil
+	}
+	return errs
+}
+
+func listServices() error {
+	conf, err := parseConfig()
+	if err != nil {
+		return fmt.Errorf("parse config: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer func() { cancel() }()
+	client := http.Client{}
+
+	var errs error
+	for _, ip := range conf.IPs {
+		req, err := http.NewRequest(http.MethodGet,
+			fmt.Sprintf("http://%s/services", ip), nil)
+		if err != nil {
+			return fmt.Errorf("new request: %w", err)
+		}
+		req = req.WithContext(ctx)
+		rsp, err := client.Do(req)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = rsp.Body.Close() }()
+
+		if err := responseOK(rsp); err != nil {
+			byt, _ := io.ReadAll(rsp.Body)
+			errs = multierror.Append(errs,
+				fmt.Errorf("%s: %w: %s", ip, err, string(byt)))
+			continue
+		}
+		rspData := struct {
+			Data map[string]yeoman.ServiceOpts `json:"data"`
+		}{}
+		err = json.NewDecoder(rsp.Body).Decode(&rspData)
+		if err != nil {
+			errs = multierror.Append(errs,
+				fmt.Errorf("%s: decode: %w", ip, err))
+			continue
+		}
+		opts := make([]yeoman.ServiceOpts, 0, len(rspData.Data))
+		for _, opt := range rspData.Data {
+			opts = append(opts, opt)
+		}
+		sort.Sort(yeoman.ServiceOptsByName(opts))
+
+		byt, err := json.MarshalIndent(opts, "", "\t")
+		if err != nil {
+			return fmt.Errorf("marshal indent: %w", err)
+		}
+		fmt.Println(string(byt))
+
 		return nil
 	}
 	return errs

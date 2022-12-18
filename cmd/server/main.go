@@ -24,7 +24,8 @@ func main() {
 }
 
 func run() error {
-	log := zerolog.New(os.Stdout)
+	output := zerolog.ConsoleWriter{Out: os.Stdout}
+	log := zerolog.New(output).With().Timestamp().Logger()
 
 	// TODO(egtann) make this a flag
 	store := google.NewBucket("yeoman-bucket")

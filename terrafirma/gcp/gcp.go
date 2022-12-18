@@ -222,7 +222,7 @@ func (g *GCP) CreateVM(ctx context.Context, vm *tf.VM) error {
 		g.log.Error().Str("func", "CreateVM").Msg(string(byt))
 		return fmt.Errorf("unmarshal: %w", err)
 	}
-	err = g.pollOperation(ctx, respData.SelfLink, vm.Name)
+	err = g.pollOperation(ctx, respData.SelfLink, vm.Name, "create")
 	if err != nil {
 		return fmt.Errorf("poll operation: %w", err)
 	}
@@ -246,7 +246,7 @@ func (g *GCP) Delete(ctx context.Context, name string) error {
 		g.log.Error().Str("func", "Delete").Msg(string(byt))
 		return fmt.Errorf("unmarshal: %w", err)
 	}
-	err = g.pollOperation(ctx, respData.SelfLink, name)
+	err = g.pollOperation(ctx, respData.SelfLink, name, "delete")
 	if err != nil {
 		return fmt.Errorf("poll operation: %w", err)
 	}
@@ -255,13 +255,17 @@ func (g *GCP) Delete(ctx context.Context, name string) error {
 	return nil
 }
 
-// pollOperation recursively, returning nil or an error when the operation is done.
-func (g *GCP) pollOperation(ctx context.Context, path, name string) error {
+// pollOperation recursively, returning nil or an error when the operation is
+// done.
+func (g *GCP) pollOperation(
+	ctx context.Context,
+	path, name, opName string,
+) error {
 	if path == "" {
 		return nil
 	}
 
-	g.log.Debug().Str("name", name).Msg("polling")
+	g.log.Debug().Str("name", name).Msgf("polling %s", opName)
 	byt, err := g.do(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return fmt.Errorf("do %s: %w", path, err)
@@ -315,7 +319,7 @@ func (g *GCP) pollOperation(ctx context.Context, path, name string) error {
 	}
 	if respData.Status != "DONE" {
 		time.Sleep(5 * time.Second)
-		return g.pollOperation(ctx, path, name)
+		return g.pollOperation(ctx, path, name, opName)
 	}
 	return nil
 }

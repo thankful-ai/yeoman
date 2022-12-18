@@ -21,14 +21,14 @@ type Server struct {
 	store      Store
 	reporter   Reporter
 	services   []*Service
-	serviceSet map[string]struct{}
+	serviceSet map[string]*Service
 
 	// serviceShutdownCh receives signals from a service that it is
 	// shutting down, so that the server can remove it from the set and
 	// list of services.
 	serviceShutdownCh chan string
 
-	mu   sync.Mutex
+	mu   sync.RWMutex
 	stop chan struct{}
 }
 
@@ -43,7 +43,7 @@ func NewServer(opts ServerOpts) *Server {
 		log:               opts.Log,
 		store:             opts.Store,
 		reporter:          opts.Reporter,
-		serviceSet:        map[string]struct{}{},
+		serviceSet:        map[string]*Service{},
 		serviceShutdownCh: make(chan string),
 		stop:              make(chan struct{}),
 	}
@@ -118,36 +118,147 @@ func (s *Server) Start(
 			serviceLog := providerLog.With().
 				Str("service", opt.Name).
 				Logger()
-			serviceLog.Info().
-				Str("name", opt.Name).
-				Msg("discovered service")
+			serviceLog.Info().Msg("discovered service")
 			service := newService(serviceLog, terra, cp,
 				s.store, s.reporter, s.serviceShutdownCh, opt)
 			service.start()
-			s.serviceSet[opt.Name] = struct{}{}
+			s.serviceSet[opt.Name] = service
 			s.services = append(s.services, service)
+		}
+		removeService := func(name string) error {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+
+			serviceLog := providerLog.With().
+				Str("service", name).
+				Logger()
+
+			service, exist := s.serviceSet[name]
+			if !exist {
+				return nil
+			}
+			serviceLog.Info().Msg("reaping service")
+
+			ctx, cancel := context.WithTimeout(
+				context.Background(), 30*time.Second)
+			defer cancel()
+
+			stopped := make(chan struct{}, 1)
+			if err := service.stop(ctx, stopped); err != nil {
+				return fmt.Errorf("stop service: %w", err)
+			}
+			<-stopped
+			serviceLog.Debug().Msg("service stopped by reaper")
+			if err := service.teardownAllVMs(); err != nil {
+				return fmt.Errorf("teardown all vms: %w", err)
+			}
+			serviceLog.Debug().Msg("all vms torn down stopped by reaper")
+
+			delete(s.serviceSet, name)
+			services := make([]*Service, 0, len(s.serviceSet))
+			for _, service := range s.serviceSet {
+				services = append(services, service)
+			}
+			s.services = services
+			return nil
+		}
+
+		reapOrphans := func() {
+			s.log.Debug().Msg("checking for orphans")
+			inventory, err := terra.Inventory()
+			if err != nil {
+				err = fmt.Errorf("terrafirma inventory: %w", err)
+				s.reporter.Report(err)
+				return
+			}
+			var toDelete []string
+			plan := map[tf.CloudProviderName]*tf.ProviderPlan{}
+			for cpName, vms := range inventory {
+				for _, vm := range vms {
+					parts := strings.Split(vm.Name, "-")
+
+					// Skip any VMs not managed by yeoman.
+					if parts[0] != "ym" {
+						continue
+					}
+					s.mu.RLock()
+					_, exist := s.serviceSet[parts[1]]
+					s.mu.RUnlock()
+					if exist {
+						continue
+					}
+					if plan[cpName] == nil {
+						plan[cpName] = &tf.ProviderPlan{}
+					}
+					plan[cpName].Destroy = append(
+						plan[cpName].Destroy, vm)
+					s.log.Info().
+						Str("vm", vm.Name).
+						Msg("found orphan")
+					toDelete = append(toDelete, vm.Name)
+				}
+			}
+			if len(toDelete) == 0 {
+				return
+			}
+			s.log.Info().
+				Strs("names", toDelete).
+				Msg("reaping orphans")
+			if err := terra.DestroyAll(plan); err != nil {
+				err = fmt.Errorf("destroy all: %w", err)
+				s.reporter.Report(err)
+				return
+			}
+			s.log.Debug().Msg("reaped orphans")
 		}
 
 		// Continually look for newly created services.
 		go func() {
-			for {
-				select {
-				case <-time.After(3 * time.Second):
-					s.log.Debug().Msg("refreshing services")
-					ctx, cancel := context.WithTimeout(
-						context.Background(),
-						10*time.Second)
-					opts, err := s.store.GetServices(ctx)
-					cancel()
+			defer func() { recoverPanic(s.reporter) }()
+			var lastOpts map[string]ServiceOpts
+			addRemoveServices := func() {
+				s.log.Debug().Msg("refreshing services")
+				ctx, cancel := context.WithTimeout(
+					context.Background(),
+					10*time.Second)
+				opts, err := s.store.GetServices(ctx)
+				cancel()
+				if err != nil {
+					err = fmt.Errorf("get services: %w", err)
+					s.reporter.Report(err)
+					return
+				}
+
+				for _, opt := range opts {
+					addService(opt)
+				}
+
+				// Find any marked for deletion.
+				for name := range lastOpts {
+					_, exist := opts[name]
+					if exist {
+						continue
+					}
+					err = removeService(name)
 					if err != nil {
-						err = fmt.Errorf("get services: %w", err)
+						err = fmt.Errorf("remove service: %w", err)
 						s.reporter.Report(err)
 						return
 					}
+				}
+				lastOpts = opts
 
-					for _, opt := range opts {
-						addService(opt)
-					}
+				reapOrphans()
+			}
+
+			// Add and remove services immediately, then re-check
+			// every few seconds. Reap any orphans once we've
+			// retrieved our services.
+			addRemoveServices()
+			for {
+				select {
+				case <-time.After(3 * time.Second):
+					addRemoveServices()
 				case <-s.stop:
 					return
 				}
@@ -158,14 +269,21 @@ func (s *Server) Start(
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
+	if len(s.services) == 0 {
+		close(s.stop)
+		return nil
+	}
+
 	errs := make(chan error, len(s.services))
 	for _, service := range s.services {
 		go func() {
-			if err := service.stop(ctx); err != nil {
+			stopCh := make(chan struct{}, 1)
+			if err := service.stop(ctx, stopCh); err != nil {
 				errs <- err
 				return
 			}
 			errs <- nil
+			<-stopCh
 		}()
 	}
 	var result *multierror.Error

@@ -181,16 +181,8 @@ func (s *Service) start() {
 			cancel()
 			switch {
 			case errors.Is(err, Missing):
-				// Teardown the service and all VMs, since it
-				// was deleted, then notify the server that
-				// we've stopped.
-				s.log.Info().Msg("service removed, tearing down vms")
-				var err error
-				vms, err = s.autoscaleTeardownVMs(vms)
-				if err != nil {
-					s.reporter.Report(
-						fmt.Errorf("autoscale teardown vms: %w", err))
-				}
+				// The reaper will automatically clean up the
+				// services next time it runs.
 				s.shutdownCh <- s.opts.Name
 				return
 			case err != nil:
@@ -411,7 +403,7 @@ func pollUntilHealthy(vm *tf.VM, timeout time.Duration) error {
 	}
 }
 
-func (s *Service) stop(ctx context.Context) error {
+func (s *Service) stop(ctx context.Context, stopCh chan<- struct{}) error {
 	if s.stopCh == nil {
 		// The service was never started.
 		return nil
@@ -443,7 +435,7 @@ func (s *Service) autoscaleTeardownVMs(vms []*vmState) ([]*vmState, error) {
 
 	// Always prioritize removing unhealthy VMs and those with the lowest
 	// load before any others.
-	sort.Sort(byHealthAndLoad(vms))
+	sort.Sort(vmStateByHealthAndLoad(vms))
 
 	// Delete the first VM in the list. Autoscaling backs down the count of
 	// VMs slowly, one at a time.
@@ -458,6 +450,26 @@ func (s *Service) autoscaleTeardownVMs(vms []*vmState) ([]*vmState, error) {
 	return vms[1:], nil
 }
 
+func (s *Service) teardownAllVMs() error {
+	vms, err := s.getVMs()
+	if err != nil {
+		return fmt.Errorf("get vms: %w", err)
+	}
+	toDelete := make([]*tf.VM, 0, len(vms))
+	for _, vm := range vms {
+		toDelete = append(toDelete, vm.vm)
+	}
+	plan := map[tf.CloudProviderName]*tf.ProviderPlan{
+		s.cloudProvider: &tf.ProviderPlan{
+			Destroy: toDelete,
+		},
+	}
+	if err := s.terra.DestroyAll(plan); err != nil {
+		return fmt.Errorf("destroy all: %w", err)
+	}
+	return nil
+}
+
 func (s *Service) teardownVMs(vms []*vmState, max int) ([]*vmState, error) {
 	if len(vms) == 0 {
 		return vms, nil
@@ -465,7 +477,7 @@ func (s *Service) teardownVMs(vms []*vmState, max int) ([]*vmState, error) {
 
 	// Always prioritize removing unhealthy VMs and those with the lowest
 	// load before any others.
-	sort.Sort(byHealthAndLoad(vms))
+	sort.Sort(vmStateByHealthAndLoad(vms))
 
 	deleteCount := len(vms) - max
 	toDelete := make([]*tf.VM, 0, deleteCount)
@@ -590,12 +602,20 @@ type healthCheck struct {
 	path string
 }
 
-// byHealthAndLoad sorts unhealthy and low-load VMs first.
-type byHealthAndLoad []*vmState
+type ServiceOptsByName []ServiceOpts
 
-func (a byHealthAndLoad) Len() int      { return len(a) }
-func (a byHealthAndLoad) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
-func (a byHealthAndLoad) Less(i, j int) bool {
+func (a ServiceOptsByName) Len() int      { return len(a) }
+func (a ServiceOptsByName) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
+func (a ServiceOptsByName) Less(i, j int) bool {
+	return a[i].Name < a[j].Name
+}
+
+// vmStateByHealthAndLoad sorts unhealthy and low-load VMs first.
+type vmStateByHealthAndLoad []*vmState
+
+func (a vmStateByHealthAndLoad) Len() int      { return len(a) }
+func (a vmStateByHealthAndLoad) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
+func (a vmStateByHealthAndLoad) Less(i, j int) bool {
 	if !a[i].stats.healthy {
 		return true
 	}
