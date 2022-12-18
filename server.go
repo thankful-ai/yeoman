@@ -103,12 +103,12 @@ func (s *Server) Start(
 			if !exist {
 				return nil
 			}
-			serviceLog.Info().Msg("reaping service")
+			serviceLog.Debug().Msg("tearing down vms")
 
 			if err := service.teardownAllVMs(); err != nil {
 				return fmt.Errorf("teardown all vms: %w", err)
 			}
-			serviceLog.Debug().Msg("all vms torn down stopped by reaper")
+			serviceLog.Debug().Msg("all vms torn down")
 
 			delete(s.serviceSet, name)
 			services := make([]*Service, 0, len(s.serviceSet))
@@ -198,8 +198,6 @@ func (s *Server) Start(
 					return nil, fmt.Errorf("remove service: %w", err)
 				}
 			}
-			reapOrphans()
-
 			return newOpts, nil
 		}
 
@@ -219,6 +217,7 @@ func (s *Server) Start(
 				// Keep going, don't return. We'll try again in
 				// a few seconds.
 			}
+			reapOrphans()
 			for {
 				select {
 				case <-time.After(3 * time.Second):

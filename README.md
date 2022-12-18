@@ -164,6 +164,13 @@ $ gcloud compute instances create ym-abc-1 \
 	--tags=http-server \
 	--metadata-from-file user-data=cloud-init
 
+### Building docker images for dev
+
+1. Check `docker images` to see current version, e.g. v3.
+1. `docker build -t us-central1-docker.pkg.dev/personal-199119/yeoman-dev/healthy:v3 .`
+1. `docker push us-central1-docker.pkg.dev/personal-199119/yeoman-dev/healthy:v3`
+1. Update `terrafirma/gcp/gcp.go` cloud init to point to the new version.
+
 ### Graceful Shutdown
 
 Doesn't appear to be needed. Any cloud will finish the tasks we issue via API
@@ -171,6 +178,8 @@ without us waiting on them. Yeoman can rediscover the current state on next
 boot.
 
 TODO:
+- a single goroutine per service should be responsible for starting+stopping
+  servers, so there can't be a conflict
 - version should be the docker image ID from `docker images`?
 - restructure service bucket file json to have a list of versions, not just one
 - handle deploying a new version, identify when nothing has changed
@@ -180,5 +189,3 @@ TODO:
   automatically run `docker push` and set the tag for you?
 	> don't use :latest, seems to be bad practice.
 - think through command line interface
-
-

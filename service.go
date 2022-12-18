@@ -196,18 +196,12 @@ func (s *Service) start() {
 					s.reporter.Report(
 						fmt.Errorf("startup vms below min: %w", err))
 				}
-
-				// Give ourselves extra time for the container
-				// to download and boot.
-				//
-				// TODO(egtann) poll health for availability.
-				extraDelay = time.Minute
 				continue
 			}
 
 			for _, vm := range vms {
 				var err error
-				vm.stats, err = getStats(vm.vm, 3*time.Second)
+				vm.stats, err = s.getStats(vm.vm, 3*time.Second)
 				if err != nil {
 					s.reporter.Report(fmt.Errorf(
 						"get stats: %w", err))
@@ -234,6 +228,10 @@ func (s *Service) start() {
 			movingAvg := movingAverageLoad(loadAverages)
 			switch {
 			case movingAvg > scaleUpAverageLoad:
+				if opts.Max >= len(vms) {
+					s.log.Debug().Msg("high load, skipping autoscale at maximum")
+					continue
+				}
 				s.log.Info().
 					Float64("scaleUpAverageLoad", scaleUpAverageLoad).
 					Float64("movingAverage", movingAvg).
@@ -256,9 +254,21 @@ func (s *Service) start() {
 					s.reporter.Report(
 						fmt.Errorf("startup vms autoscale: %w", err))
 				}
-				extraDelay = time.Minute
+
+				// TODO(egtann) we probably want to expand this
+				// to allow more traffic and requests to hit
+				// the box before re-measuring load.
+				extraDelay = 3 * time.Second
 				continue
 			case movingAvg < scaleDownAverageLoad:
+				if len(vms) == 0 {
+					continue
+				}
+				if opts.Min <= len(vms) {
+					s.log.Debug().Msg("low load, skipping autoscale at minimum")
+					continue
+				}
+
 				s.log.Info().
 					Float64("scaleDownAverageLoad", scaleDownAverageLoad).
 					Float64("movingAverage", movingAvg).
@@ -290,7 +300,7 @@ func (s *Service) getVMs() ([]*vmState, error) {
 	return vms, nil
 }
 
-func getStats(
+func (s *Service) getStats(
 	vm *tf.VM,
 	timeout time.Duration,
 ) (stats, error) {
@@ -300,20 +310,35 @@ func getStats(
 	if ip == "" {
 		return zero, errors.New("missing internal ip")
 	}
+	s.log.Debug().
+		Str("name", vm.Name).
+		Str("ip", ip).
+		Str("type", "internal").
+		Msg("getting stats")
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	s, err := getStatsContextWithIP(ctx, vm, ip)
+	ioTimeout := func(err error) bool {
+		if err == nil {
+			return false
+		}
+		return strings.HasSuffix(err.Error(), ": i/o timeout")
+	}
+
+	st, err := getStatsContextWithIP(ctx, vm, ip)
 	switch {
-	case errors.Is(err, context.DeadlineExceeded), os.IsTimeout(err):
+	case errors.Is(err, context.DeadlineExceeded),
+		os.IsTimeout(err),
+		ioTimeout(err):
+
 		// This frequently happens when the server isn't available, or
 		// when we're not on the right network. In either case, try
 		// again below with the external IP.
 	case err != nil:
 		return stats{}, fmt.Errorf("get stats internal: %w", err)
 	default:
-		return s, nil
+		return st, nil
 	}
 
 	// If our internal IP check fails, we may not be running yeoman on the
@@ -322,15 +347,20 @@ func getStats(
 	if ip == "" {
 		return zero, errors.New("missing external ip")
 	}
+	s.log.Debug().
+		Str("name", vm.Name).
+		Str("ip", ip).
+		Str("type", "external").
+		Msg("getting stats")
 
 	ctx2, cancel2 := context.WithTimeout(context.Background(), timeout)
 	defer cancel2()
 
-	s, err = getStatsContextWithIP(ctx2, vm, ip)
+	st, err = getStatsContextWithIP(ctx2, vm, ip)
 	if err != nil {
 		return stats{}, fmt.Errorf("get stats external fallback: %w", err)
 	}
-	return s, nil
+	return st, nil
 }
 
 func getStatsContextWithIP(
@@ -365,7 +395,7 @@ func getStatsContextWithIP(
 	return stats{healthy: true, load: data.Load}, nil
 }
 
-func pollUntilHealthy(vm *tf.VM, timeout time.Duration) error {
+func (s *Service) pollUntilHealthy(vm *tf.VM, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
@@ -375,7 +405,7 @@ func pollUntilHealthy(vm *tf.VM, timeout time.Duration) error {
 		case <-ctx.Done():
 			return lastError
 		default:
-			if _, err := getStats(vm, timeout); err != nil {
+			if _, err := s.getStats(vm, timeout); err != nil {
 				lastError = fmt.Errorf("get stats: %w", err)
 				continue
 			}
@@ -385,10 +415,6 @@ func pollUntilHealthy(vm *tf.VM, timeout time.Duration) error {
 }
 
 func (s *Service) autoscaleTeardownVMs(vms []*vmState) ([]*vmState, error) {
-	if len(vms) == 0 {
-		return vms, nil
-	}
-
 	// Always prioritize removing unhealthy VMs and those with the lowest
 	// load before any others.
 	sort.Sort(vmStateByHealthAndLoad(vms))
@@ -509,13 +535,12 @@ func (s *Service) startupVMs(
 			parts := strings.Split(vm.Name, "-")
 
 			// VM names are of the form:
-			// ym-$service-$version-$index
-			if len(parts) != 4 {
+			// ym-$service-$index
+			if len(parts) != 3 {
 				continue
 			}
 			if parts[0] != "ym" ||
-				parts[1] != opts.Name ||
-				parts[2] != strconv.Itoa(opts.Version) {
+				parts[1] != opts.Name {
 				continue
 			}
 			vms = append(vms, &vmState{vm: vm})
@@ -531,18 +556,21 @@ func (s *Service) startupVMs(
 	// TODO(egtann) for a large number of VMs (> 1,000?) we should cap the
 	// number of goroutines to prevent too many file descriptors and
 	// maxing network IO?
-	errs := make(chan error, len(vms))
+	s.log.Info().Int("count", len(vms)).Msg("waiting for services on new vms to boot")
+	errs := make(chan error)
 	for _, vm := range vms {
 		vm := vm // Capture reference
 		go func() {
 			defer func() { recoverPanic(s.reporter) }()
-			errs <- pollUntilHealthy(vm.vm, 30*time.Second)
+			errs <- s.pollUntilHealthy(vm.vm, 2*time.Minute)
 		}()
 	}
 	for i := 0; i < len(vms); i++ {
 		select {
 		case err := <-errs:
-			return nil, fmt.Errorf("get stats context: %w", err)
+			if err != nil {
+				return nil, fmt.Errorf("get stats context: %w", err)
+			}
 		}
 	}
 
@@ -550,6 +578,7 @@ func (s *Service) startupVMs(
 	// s.proxy.Update(
 
 	// All VMs reported that they're healthy.
+	s.log.Info().Msg("services on new vms reported healthy")
 	return vms, nil
 }
 
