@@ -149,9 +149,6 @@ func (s *Server) Start(
 					}
 					plan[cpName].Destroy = append(
 						plan[cpName].Destroy, vm)
-					s.log.Info().
-						Str("vm", vm.Name).
-						Msg("found orphan vm")
 					toDelete = append(toDelete, vm.Name)
 				}
 			}
