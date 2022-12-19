@@ -270,7 +270,7 @@ func (s *Server) Start(
 			// every 24 hours of uptime we'll reboot all services.
 			const targetIterations = 28_800 // 3-second periods in 24 hours
 			for i := 0; ; i++ {
-				if i%targetIterations == 0 {
+				if i > 0 && i%targetIterations == 0 {
 					restartServices()
 
 					// Ensure we never overflow. Just start

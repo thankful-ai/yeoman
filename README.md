@@ -193,12 +193,12 @@ from :revert back to :latest and reboots the servers again to get the changes
 to take hold?
 
 TODO:
+x automatically reboot all machines every 24 hours
 - a single goroutine per service should be responsible for starting+stopping
   servers, so there can't be a conflict
 - version should be the docker image ID from `docker images`?
 - restructure service bucket file json to have a list of versions, not just one
 - handle deploying a new version, identify when nothing has changed
-- automatically reboot all machines every 24 hours
 - wire in the reverse proxy, check machine health, route around bad machines
 - incorporate the docker commands into the yeoman cli? such that deploying will
   automatically run `docker push` and set the tag for you?
