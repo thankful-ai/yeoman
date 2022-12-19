@@ -175,7 +175,22 @@ $ gcloud compute instances create ym-abc-1 \
 
 Doesn't appear to be needed. Any cloud will finish the tasks we issue via API
 without us waiting on them. Yeoman can rediscover the current state on next
-boot.
+boot. Simplifies the logic / reduces surface for bugs by a huge amount.
+
+### Deploy strategy
+
+1. Build a docker image, tagged with :latest
+1. Reboot all existing VMs in batches, check health before continuing.
+1. Revert if anything goes wrong.
+1. Client should be connected and polling the server during this for updates?
+
+Create 2 tags pushed to docker. The first is :latest, which is what we'd like
+to deploy. The 2nd is :revert, which is the current :latest before we create
+the new version.
+
+If things don't go well (servers not healthy, etc.), the server changes the tag
+from :revert back to :latest and reboots the servers again to get the changes
+to take hold?
 
 TODO:
 - a single goroutine per service should be responsible for starting+stopping

@@ -18,8 +18,11 @@ type CloudProvider interface {
 	// deleted.
 	Delete(ctx context.Context, name string) error
 
-	// CreateVM must hang until boot completes.
-	CreateVM(context.Context, *VM) error
+	// Create VM. This must hang until boot completes.
+	Create(context.Context, *VM) error
+
+	// Restart VM. Hang until boot completes.
+	Restart(ctx context.Context, name string) error
 }
 
 // MockCloudProvider implements the CloudProvider interface for simplified
@@ -77,8 +80,8 @@ func (m *MockCloudProvider) GetAll(ctx context.Context) ([]*VM, error) {
 	return vms, nil
 }
 
-func (m *MockCloudProvider) CreateVM(ctx context.Context, vm *VM) error {
-	m.vals = append(m.vals, fmt.Sprintf("CreateVM %s", vm.Name))
+func (m *MockCloudProvider) Create(ctx context.Context, vm *VM) error {
+	m.vals = append(m.vals, fmt.Sprintf("Create %s", vm.Name))
 	return nil
 }
 

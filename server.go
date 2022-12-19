@@ -3,12 +3,14 @@ package yeoman
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"time"
 
 	tf "github.com/egtann/yeoman/terrafirma"
 	"github.com/egtann/yeoman/terrafirma/gcp"
+	"github.com/hashicorp/go-multierror"
 	"github.com/rs/zerolog"
 )
 
@@ -200,6 +202,51 @@ func (s *Server) Start(
 			}
 			return newOpts, nil
 		}
+		restartServices := func() {
+			// We restart every 24 hours to ensure that any hacks
+			// on the box are not persisted, to apply security
+			// updates, and to help avoid light memory and resource
+			// leaks causing outages.
+			s.log.Info().Msg("restarting services (24 hour uptime)")
+
+			inventory, err := terra.Inventory()
+			if err != nil {
+				err = fmt.Errorf("terrafirma inventory: %w", err)
+				s.reporter.Report(err)
+				return
+			}
+			jobs := make(chan []string)
+			for cpName, vms := range inventory {
+				names := make([]string, 0, len(vms))
+				for _, vm := range vms {
+					names = append(names, vm.Name)
+				}
+				nameBatches := makeBatches(names)
+
+				go func(cpName tf.CloudProviderName) {
+					for _, nameBatch := range nameBatches {
+						jobs <- nameBatch
+					}
+					close(jobs)
+				}(cpName)
+
+				var result *multierror.Error
+				for batch := range jobs {
+					s.log.Info().
+						Strs("names", batch).
+						Msg("restarting batch")
+					err = terra.Restart(cpName, batch)
+					if err != nil {
+						result = multierror.Append(result, err)
+					}
+				}
+				if err = result.ErrorOrNil(); err != nil {
+					err = fmt.Errorf("failed to restart services: %w", err)
+					s.reporter.Report(err)
+					return
+				}
+			}
+		}
 
 		// Continually look for newly created services and stop
 		// tracking old ones.
@@ -218,7 +265,18 @@ func (s *Server) Start(
 				// a few seconds.
 			}
 			reapOrphans()
-			for {
+
+			// Every 3 seconds we'll update our live services, and
+			// every 24 hours of uptime we'll reboot all services.
+			const targetIterations = 28_800 // 3-second periods in 24 hours
+			for i := 0; ; i++ {
+				if i%targetIterations == 0 {
+					restartServices()
+
+					// Ensure we never overflow. Just start
+					// the count again.
+					i = 0
+				}
 				select {
 				case <-time.After(3 * time.Second):
 					opts, err = addRemoveServices(opts)
@@ -233,4 +291,26 @@ func (s *Server) Start(
 		}()
 	}
 	return nil
+}
+
+func makeBatches[T any](items []T) [][]T {
+	var (
+		out      = [][]T{}
+		perBatch = int(math.Floor(float64(len(items)) / 3.0))
+		next     []T
+	)
+	if perBatch == 0 {
+		perBatch = 1
+	}
+	for i, item := range items {
+		if i > 0 && i%perBatch == 0 {
+			out = append(out, next)
+			next = []T{}
+		}
+		next = append(next, item)
+	}
+	if len(next) == 0 {
+		return out
+	}
+	return append(out, next)
 }

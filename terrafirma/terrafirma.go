@@ -61,6 +61,66 @@ func vmFromBox(boxes map[BoxName]*Box, vmTemplate *VMTemplate) (*VM, error) {
 	return vm, nil
 }
 
+func (t *Terrafirma) Restart(
+	cpName CloudProviderName,
+	boxNames []string,
+) error {
+	ctx, cancel := context.WithTimeout(context.Background(), t.timeout)
+	defer cancel()
+
+	errCh := make(chan error)
+	for _, boxName := range boxNames {
+		go func(boxName string) {
+			errCh <- t.providers[cpName].Restart(ctx, boxName)
+		}(boxName)
+	}
+	for i := 0; i < len(boxNames); i++ {
+		select {
+		case err := <-errCh:
+			if err != nil {
+				return fmt.Errorf("restart: %w", err)
+			}
+		case <-ctx.Done():
+			drain(errCh)
+			return fmt.Errorf("restart: %w", ctx.Err())
+		}
+	}
+	return nil
+}
+
+func drain[T any](ch chan T) {
+	go func() {
+		for range ch {
+		}
+	}()
+}
+
+func (t *Terrafirma) restartAllProvider(
+	ctx context.Context,
+	name CloudProviderName,
+	boxes map[BoxName]*Box,
+) error {
+	errCh := make(chan error)
+	for _, box := range boxes {
+		go func(box *Box) {
+			errCh <- t.providers[name].Restart(ctx,
+				string(box.Name))
+		}(box)
+	}
+	for i := 0; i < len(boxes); i++ {
+		select {
+		case err := <-errCh:
+			if err != nil {
+				return fmt.Errorf("restart: %w", err)
+			}
+		case <-ctx.Done():
+			drain(errCh)
+			return fmt.Errorf("restart: %w", ctx.Err())
+		}
+	}
+	return nil
+}
+
 // Plan a set of changes to infrastructure given a desired box type and the
 // number to create.
 func (t *Terrafirma) Plan(
@@ -313,7 +373,7 @@ func (t *Terrafirma) createAllProvider(
 				errCh <- fmt.Errorf("vm from box: %w", err)
 				return
 			}
-			errCh <- t.providers[name].CreateVM(ctx, vm)
+			errCh <- t.providers[name].Create(ctx, vm)
 		}(i)
 	}
 	for i := 0; i < len(p.Create); i++ {
@@ -323,6 +383,7 @@ func (t *Terrafirma) createAllProvider(
 				return fmt.Errorf("create: %w", err)
 			}
 		case <-ctx.Done():
+			drain(errCh)
 			return fmt.Errorf("create vms: %w", ctx.Err())
 		}
 	}
@@ -363,6 +424,7 @@ func (t *Terrafirma) destroyAllProvider(
 				return fmt.Errorf("destroy: %w", err)
 			}
 		case <-ctx.Done():
+			drain(errCh)
 			return fmt.Errorf("destroy: %w", ctx.Err())
 		}
 	}

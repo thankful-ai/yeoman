@@ -33,7 +33,7 @@ write_files:
     [Service]
     Environment="HOME=/home/cloudservice"
     ExecStartPre=/usr/bin/docker-credential-gcr configure-docker --registries us-central1-docker.pkg.dev
-    ExecStart=/usr/bin/docker run -t -p 80:3000 --name=healthy us-central1-docker.pkg.dev/personal-199119/yeoman-dev/healthy:v5
+    ExecStart=/usr/bin/docker run --rm -t -p 80:3000 --name=healthy us-central1-docker.pkg.dev/personal-199119/yeoman-dev/healthy:v5
     ExecStop=/usr/bin/docker stop healthy
     ExecStopPost=/usr/bin/docker rm healthy
 
@@ -199,7 +199,7 @@ func (g *GCP) GetAll(ctx context.Context) ([]*tf.VM, error) {
 	return vms, nil
 }
 
-func (g *GCP) CreateVM(ctx context.Context, vm *tf.VM) error {
+func (g *GCP) Create(ctx context.Context, vm *tf.VM) error {
 	g.log.Info().Str("name", vm.Name).Msg("creating vm")
 
 	googleVM, err := g.vmToGoogle(vm)
@@ -219,7 +219,7 @@ func (g *GCP) CreateVM(ctx context.Context, vm *tf.VM) error {
 		SelfLink string `json:"selfLink"`
 	}
 	if err := json.Unmarshal(byt, &respData); err != nil {
-		g.log.Error().Str("func", "CreateVM").Msg(string(byt))
+		g.log.Error().Str("func", "Create").Msg(string(byt))
 		return fmt.Errorf("unmarshal: %w", err)
 	}
 	err = g.pollOperation(ctx, respData.SelfLink, vm.Name, "create")
@@ -252,6 +252,44 @@ func (g *GCP) Delete(ctx context.Context, name string) error {
 	}
 
 	g.log.Info().Str("name", name).Msg("deleted vm")
+	return nil
+}
+
+func (g *GCP) Restart(ctx context.Context, name string) error {
+	g.log.Info().Str("name", name).Msg("restarting vm")
+
+	path := fmt.Sprintf("/instances/%s/stop", name)
+	byt, err := g.do(ctx, http.MethodPost, path, nil)
+	if err != nil {
+		return fmt.Errorf("do %s: %w", path, err)
+	}
+	var respData struct {
+		SelfLink string `json:"selfLink"`
+	}
+	if err := json.Unmarshal(byt, &respData); err != nil {
+		g.log.Error().Str("func", "Restart (stop)").Msg(string(byt))
+		return fmt.Errorf("unmarshal: %w", err)
+	}
+	err = g.pollOperation(ctx, respData.SelfLink, name, "restart (stopping)")
+	if err != nil {
+		return fmt.Errorf("poll operation: %w", err)
+	}
+
+	path = fmt.Sprintf("/instances/%s/start", name)
+	byt, err = g.do(ctx, http.MethodPost, path, nil)
+	if err != nil {
+		return fmt.Errorf("do %s: %w", path, err)
+	}
+	if err := json.Unmarshal(byt, &respData); err != nil {
+		g.log.Error().Str("func", "Restart (start)").Msg(string(byt))
+		return fmt.Errorf("unmarshal: %w", err)
+	}
+	err = g.pollOperation(ctx, respData.SelfLink, name, "restart (starting)")
+	if err != nil {
+		return fmt.Errorf("poll operation: %w", err)
+	}
+
+	g.log.Info().Str("name", name).Msg("restarted vm")
 	return nil
 }
 
