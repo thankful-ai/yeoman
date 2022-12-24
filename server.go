@@ -42,7 +42,7 @@ func NewServer(opts ServerOpts) *Server {
 
 func (s *Server) Start(
 	ctx context.Context,
-	cloudProviders []tf.CloudProviderName,
+	providerRegistries map[tf.CloudProviderName]ContainerRegistry,
 ) error {
 	s.log.Info().Msg("starting server")
 
@@ -50,10 +50,10 @@ func (s *Server) Start(
 	if err != nil {
 		return fmt.Errorf("get services: %w", err)
 	}
-	s.services = make([]*Service, 0, len(cloudProviders)*len(opts))
+	s.services = make([]*Service, 0, len(providerRegistries)*len(opts))
 
 	terra := tf.New(5 * time.Minute)
-	for _, cp := range cloudProviders {
+	for cp, registry := range providerRegistries {
 		parts := strings.Split(string(cp), ":")
 		if len(parts) != 4 {
 			return fmt.Errorf("invalid cloud provider: %s", cp)
@@ -67,7 +67,8 @@ func (s *Server) Start(
 				zone    = parts[3]
 			)
 			tfGCP, err := gcp.New(providerLog, HTTPClient(),
-				project, region, zone)
+				project, region, zone, registry.Name,
+				registry.Path)
 			if err != nil {
 				return fmt.Errorf("gcp new: %w", err)
 			}
@@ -80,7 +81,10 @@ func (s *Server) Start(
 			s.mu.Lock()
 			defer s.mu.Unlock()
 
-			if _, exist := s.serviceSet[opt.Name]; exist {
+			if service, exist := s.serviceSet[opt.Name]; exist {
+				if opt != service.opts {
+					s.restartServiceVMs(terra, opt.Name)
+				}
 				return
 			}
 			serviceLog := providerLog.With().
@@ -199,7 +203,7 @@ func (s *Server) Start(
 			}
 			return newOpts, nil
 		}
-		restartServices := func() {
+		restartAllVMs := func() {
 			// We restart every 24 hours to ensure that any hacks
 			// on the box are not persisted, to apply security
 			// updates, and to help avoid light memory and resource
@@ -268,7 +272,7 @@ func (s *Server) Start(
 			const targetIterations = 28_800 // 3-second periods in 24 hours
 			for i := 0; ; i++ {
 				if i > 0 && i%targetIterations == 0 {
-					restartServices()
+					restartAllVMs()
 
 					// Ensure we never overflow. Just start
 					// the count again.
@@ -310,4 +314,58 @@ func makeBatches[T any](items []T) [][]T {
 		return out
 	}
 	return append(out, next)
+}
+
+func (s *Server) restartServiceVMs(terra *tf.Terrafirma, serviceName string) {
+	s.log.Info().Msg("restarting service vms")
+
+	inventory, err := terra.Inventory()
+	if err != nil {
+		err = fmt.Errorf("terrafirma inventory: %w", err)
+		s.reporter.Report(err)
+		return
+	}
+	jobs := make(chan []string)
+	for cpName, vms := range inventory {
+		var names []string
+		for _, vm := range vms {
+			parts := strings.Split(vm.Name, "-")
+
+			// Skip any VMs not managed by yeoman.
+			if parts[0] != "ym" {
+				continue
+			}
+			if parts[1] != serviceName {
+				continue
+			}
+			names = append(names, vm.Name)
+		}
+		if len(names) == 0 {
+			continue
+		}
+		nameBatches := makeBatches(names)
+
+		go func(cpName tf.CloudProviderName) {
+			for _, nameBatch := range nameBatches {
+				jobs <- nameBatch
+			}
+			close(jobs)
+		}(cpName)
+
+		var result *multierror.Error
+		for batch := range jobs {
+			s.log.Info().
+				Strs("names", batch).
+				Msg("restarting batch")
+			err = terra.Restart(cpName, batch)
+			if err != nil {
+				result = multierror.Append(result, err)
+			}
+		}
+		if err = result.ErrorOrNil(); err != nil {
+			err = fmt.Errorf("failed to restart services: %w", err)
+			s.reporter.Report(err)
+			return
+		}
+	}
 }

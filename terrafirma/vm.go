@@ -16,6 +16,9 @@ type VM struct {
 	// Image installed on the disk.
 	Image string `json:"image,omitempty"`
 
+	// ContainerImage to be used if configured.
+	ContainerImage string `json:"containerImage,omitempty"`
+
 	// Tags on the box applied during creation to indicate the services to
 	// be deployed.
 	Tags []string `json:"-"`

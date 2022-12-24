@@ -6,4 +6,4 @@ COPY . /opt/app/
 
 EXPOSE 3000
 
-ENTRYPOINT ["python", "./server.py"]
+ENTRYPOINT ["python", "server.py"]

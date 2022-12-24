@@ -40,10 +40,13 @@ func run() error {
 	defer cancel()
 
 	// TODO(egtann) via a config file?
-	providers := []tf.CloudProviderName{
-		"gcp:personal-199119:us-central1:us-central1-b",
+	providerRegistries := map[tf.CloudProviderName]yeoman.ContainerRegistry{
+		"gcp:personal-199119:us-central1:us-central1-b": yeoman.ContainerRegistry{
+			Name: "us-central1-docker.pkg.dev",
+			Path: "us-central1-docker.pkg.dev/personal-199119/yeoman-dev",
+		},
 	}
-	if err := server.Start(ctx, providers); err != nil {
+	if err := server.Start(ctx, providerRegistries); err != nil {
 		return fmt.Errorf("server start: %w", err)
 	}
 

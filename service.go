@@ -64,7 +64,6 @@ func newService(
 	return &Service{
 		log: log.With().
 			Str("name", opts.Name).
-			Int("version", opts.Version).
 			Logger(),
 		terra:         terra,
 		cloudProvider: cloudProvider,
@@ -79,9 +78,8 @@ func newService(
 //
 // Autoscaling is considered disabled if Min and Max are the same value.
 type ServiceOpts struct {
-	Name        string `json:"name"`
-	Container   string `json:"container"`
-	Version     int    `json:"version"`
+	Name string `json:"name"`
+
 	MachineType string `json:"machineType"`
 	DiskSizeGB  int    `json:"diskSizeGB"`
 	AllowHTTP   bool   `json:"allowHTTP"`
@@ -507,14 +505,16 @@ func (s *Service) startupVMs(
 		}
 		plan[s.cloudProvider].Create = append(
 			plan[s.cloudProvider].Create, &tf.VMTemplate{
-				VMName:      fmt.Sprintf("ym-%s-%d", s.opts.Name, id),
-				BoxName:     boxName,
-				Image:       "projects/cos-cloud/global/images/family/cos-stable",
-				MachineType: opts.MachineType,
-				AllowHTTP:   opts.AllowHTTP,
-				Tags:        s.tags(),
+				VMName:         fmt.Sprintf("ym-%s-%d", opts.Name, id),
+				BoxName:        boxName,
+				Image:          "projects/cos-cloud/global/images/family/cos-stable",
+				ContainerImage: opts.Name,
+				MachineType:    opts.MachineType,
+				AllowHTTP:      opts.AllowHTTP,
+				Tags:           s.tags(),
 			})
 	}
+
 	if err := s.terra.CreateAll(boxes, plan); err != nil {
 		return nil, fmt.Errorf("create all: %w", err)
 	}
@@ -630,10 +630,7 @@ func (s *Service) tags() []string {
 	}
 	return []string{
 		prefix("n", s.opts.Name),
-		prefix("c", s.opts.Container),
-		prefix("v", strconv.Itoa(s.opts.Version)),
 		prefix("m", s.opts.MachineType),
-		prefix("a", strconv.FormatBool(s.opts.AllowHTTP)),
 	}
 }
 

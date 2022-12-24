@@ -143,13 +143,11 @@ func deployService(args []string, opts serviceOpts) error {
 
 	data := yeoman.ServiceOpts{
 		Name:        arg,
-		Container:   arg,
 		MachineType: opts.machineType,
 		DiskSizeGB:  opts.diskSizeGB,
 		AllowHTTP:   opts.allowHTTP,
 		Min:         min,
 		Max:         max,
-		Version:     1,
 	}
 	byt, err := json.Marshal(data)
 	if err != nil {

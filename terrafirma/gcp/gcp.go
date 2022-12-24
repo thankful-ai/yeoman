@@ -18,29 +18,6 @@ import (
 	"golang.org/x/oauth2/google"
 )
 
-const cloudConfig = `#cloud-config
-
-write_files:
-- path: /etc/systemd/system/cloudservice.service
-  permissions: 0644
-  owner: root
-  content: |
-    [Unit]
-    Description=Start a simple docker container
-    Wants=gcr-online.target
-    After=gcr-online.target
-
-    [Service]
-    Environment="HOME=/home/cloudservice"
-    ExecStartPre=/usr/bin/docker-credential-gcr configure-docker --registries %s
-    ExecStart=/usr/bin/docker run --rm -t -p 80:3000 --name=healthy %s:latest
-    ExecStop=/usr/bin/docker stop healthy
-    ExecStopPost=/usr/bin/docker rm healthy
-
-runcmd:
-- systemctl daemon-reload
-- systemctl start cloudservice.service`
-
 const gb = 1024
 
 type vm struct {
@@ -147,20 +124,29 @@ type GCP struct {
 	region        string
 	zone          string
 	url           string
+
+	// registryName in the form "us-central1-docker.pkg.dev"
+	registryName string
+
+	// registryPath in the form
+	// "us-central1-docker.pkg.dev/:project-name/:bucket-name
+	registryPath string
 }
 
 func New(
 	lg zerolog.Logger,
 	client *http.Client,
-	project, region, zone string,
+	project, region, zone, registryName, registryPath string,
 ) (*GCP, error) {
 	g := &GCP{
-		log:     lg,
-		client:  client,
-		project: project,
-		region:  region,
-		zone:    zone,
-		url:     "https://compute.googleapis.com/compute/v1",
+		log:          lg,
+		client:       client,
+		project:      project,
+		region:       region,
+		zone:         zone,
+		registryName: registryName,
+		registryPath: registryPath,
+		url:          "https://compute.googleapis.com/compute/v1",
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(),
@@ -199,13 +185,43 @@ func (g *GCP) GetAll(ctx context.Context) ([]*tf.VM, error) {
 	return vms, nil
 }
 
-func (g *GCP) Create(ctx context.Context, vm *tf.VM) error {
+func (g *GCP) Create(
+	ctx context.Context,
+	vm *tf.VM,
+) error {
 	g.log.Info().Str("name", vm.Name).Msg("creating vm")
 
 	googleVM, err := g.vmToGoogle(vm)
 	if err != nil {
 		return fmt.Errorf("vm to google: %w", err)
 	}
+
+	const cloudConfig = `#cloud-config
+
+write_files:
+- path: /etc/systemd/system/cloudservice.service
+  permissions: 0644
+  owner: root
+  content: |
+    [Unit]
+    Description=Start a simple docker container
+    Wants=gcr-online.target
+    After=gcr-online.target
+
+    [Service]
+    Environment="HOME=/home/cloudservice"
+    ExecStartPre=/usr/bin/docker-credential-gcr configure-docker --registries %s
+    ExecStart=/usr/bin/docker run --rm -t -p 80:3000 --name=app %s/%s:latest
+    ExecStop=/usr/bin/docker stop app
+    ExecStopPost=/usr/bin/docker rm app
+
+runcmd:
+- systemctl daemon-reload
+- systemctl start cloudservice.service`
+
+	googleVM.Metadata.Items[0].Value = fmt.Sprintf(cloudConfig,
+		g.registryName, g.registryPath, vm.ContainerImage)
+
 	byt, err := json.Marshal(googleVM)
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
@@ -511,9 +527,6 @@ func (g *GCP) vmToGoogle(v *tf.VM) (*vm, error) {
 		Metadata: &metadata{
 			Items: []keyValue{{
 				Key: "user-data",
-
-				// TODO(egtann) pass in image and registry
-				Value: fmt.Sprintf(cloudConfig, reg, img),
 			}},
 		},
 	}

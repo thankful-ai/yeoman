@@ -12,6 +12,9 @@ type VMTemplate struct {
 	// Image to be used when creating the box.
 	Image string `json:"image"`
 
+	// ContainerImage to be used when set.
+	ContainerImage string `json:"containerImage,omitempty"`
+
 	// MachineType is a provider-specific string representing how much CPU,
 	// RAM to assign to use.
 	MachineType string `json:"machineType"`

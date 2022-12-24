@@ -50,13 +50,14 @@ func vmFromBox(boxes map[BoxName]*Box, vmTemplate *VMTemplate) (*VM, error) {
 		return nil, fmt.Errorf("unknown box: %s", vmTemplate.BoxName)
 	}
 	vm := &VM{
-		Name:        vmTemplate.VMName,
-		Tags:        vmTemplate.Tags,
-		Image:       vmTemplate.Image,
-		AllowHTTP:   vmTemplate.AllowHTTP,
-		MachineType: box.MachineType,
-		Disk:        int(box.Disk),
-		GPU:         vmTemplate.GPU,
+		Name:           vmTemplate.VMName,
+		ContainerImage: vmTemplate.ContainerImage,
+		Tags:           vmTemplate.Tags,
+		Image:          vmTemplate.Image,
+		AllowHTTP:      vmTemplate.AllowHTTP,
+		MachineType:    box.MachineType,
+		Disk:           int(box.Disk),
+		GPU:            vmTemplate.GPU,
 	}
 	return vm, nil
 }

@@ -79,6 +79,7 @@ func (rt *Router) postService(
 	if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
 		return nil, badRequest(fmt.Errorf("decode: %w", err))
 	}
+	fmt.Printf("GOT DATA: %+v\n", data)
 
 	// It may be appropriate to set up locking around this in case many
 	// people are making simultaneous changes, but that adds a lot of
@@ -88,8 +89,13 @@ func (rt *Router) postService(
 	if err != nil {
 		return nil, fmt.Errorf("get services: %w", err)
 	}
-	if _, exists := services[data.Name]; exists {
-		return nil, unprocessable(fmt.Errorf("%s exists", data.Name))
+
+	lg := hlog.FromRequest(r)
+	_, exists := services[data.Name]
+	if exists {
+		lg.Info().Str("name", data.Name).Msg("updating service")
+	} else {
+		lg.Info().Str("name", data.Name).Msg("creating service")
 	}
 
 	services[data.Name] = data
@@ -202,34 +208,5 @@ func (rt *Router) getService(
 		}
 		// TODO(egtann) should this also return current state? IPs, etc?
 		return srv, nil
-	*/
-}
-
-func (rt *Router) deployService(
-	w http.ResponseWriter,
-	r *http.Request,
-) (interface{}, error) {
-	return nil, errors.New("not implemented")
-
-	/*
-		name := chi.URLParam(r, "name")
-		ctx := r.Context()
-		services, err := rt.store.GetServices(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("get services: %w", err)
-		}
-		srv, ok := services[name]
-		if !ok {
-			return nil, notFound(errors.New("service does not exist"))
-		}
-
-		// TODO(egtann) set version
-
-		// Create a new version of a service, but don't update the bucket until
-		// we're sure we've succeeded. This way even if Yeoman crashes/reboots,
-		// it'll see the currently-working version and shutdown the boxes from
-		// the failed deploy.
-
-		return nil, nil
 	*/
 }
