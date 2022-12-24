@@ -32,8 +32,8 @@ write_files:
 
     [Service]
     Environment="HOME=/home/cloudservice"
-    ExecStartPre=/usr/bin/docker-credential-gcr configure-docker --registries us-central1-docker.pkg.dev
-    ExecStart=/usr/bin/docker run --rm -t -p 80:3000 --name=healthy us-central1-docker.pkg.dev/personal-199119/yeoman-dev/healthy:v5
+    ExecStartPre=/usr/bin/docker-credential-gcr configure-docker --registries %s
+    ExecStart=/usr/bin/docker run --rm -t -p 80:3000 --name=healthy %s:latest
     ExecStop=/usr/bin/docker stop healthy
     ExecStopPost=/usr/bin/docker rm healthy
 
@@ -510,8 +510,10 @@ func (g *GCP) vmToGoogle(v *tf.VM) (*vm, error) {
 		}},
 		Metadata: &metadata{
 			Items: []keyValue{{
-				Key:   "user-data",
-				Value: cloudConfig,
+				Key: "user-data",
+
+				// TODO(egtann) pass in image and registry
+				Value: fmt.Sprintf(cloudConfig, reg, img),
 			}},
 		},
 	}

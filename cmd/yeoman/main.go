@@ -1,24 +1,31 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"math/rand"
 	"net/http"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/client"
 	"github.com/egtann/yeoman"
 	"github.com/hashicorp/go-multierror"
+	"golang.org/x/oauth2/google"
 )
 
 const configPath = "yeoman.json"
@@ -37,7 +44,6 @@ func main() {
 
 func run() error {
 	minMax := flag.String("n", "1", "min and max of servers (e.g. 3:5)")
-	containerName := flag.String("c", "", "container name")
 	machineType := flag.String("m", "e2-micro", "machine type")
 	diskSizeGB := flag.Int("d", 10, "disk size in GB")
 	allowHTTP := flag.Bool("http", false, "allow http")
@@ -49,14 +55,11 @@ func run() error {
 		return nil
 	case "service":
 		return service(tail, serviceOpts{
-			minMax:        *minMax,
-			containerName: *containerName,
-			machineType:   *machineType,
-			diskSizeGB:    *diskSizeGB,
-			allowHTTP:     *allowHTTP,
+			minMax:      *minMax,
+			machineType: *machineType,
+			diskSizeGB:  *diskSizeGB,
+			allowHTTP:   *allowHTTP,
 		})
-	case "deploy":
-		return nil
 	case "status":
 		return nil
 	case "version":
@@ -71,25 +74,24 @@ func run() error {
 
 type serviceOpts struct {
 	// minMax in the form of "3:5".
-	minMax        string
-	containerName string
-	machineType   string
-	diskSizeGB    int
-	allowHTTP     bool
+	minMax      string
+	machineType string
+	diskSizeGB  int
+	allowHTTP   bool
 }
 
 func service(args []string, opts serviceOpts) error {
 	arg, tail := parseArg(args)
 	switch arg {
-	case "create":
+	case "deploy":
 		// Notifies the service over API.
-		return createService(tail, opts)
+		return deployService(tail, opts)
 	case "list":
 		return listServices()
 	case "destroy":
 		return destroyService(tail, opts)
 	case "", "help":
-		return emptyArgError("service [list|create|destroy]")
+		return emptyArgError("service [list|deploy|destroy]")
 	default:
 		return badArgError(arg)
 	}
@@ -97,11 +99,11 @@ func service(args []string, opts serviceOpts) error {
 }
 
 // TODO(egtann) validate that the name is URL-safe.
-func createService(args []string, opts serviceOpts) error {
+func deployService(args []string, opts serviceOpts) error {
 	arg, tail := parseArg(args)
 	switch arg {
 	case "", "help":
-		return emptyArgError("create service $NAME")
+		return emptyArgError("deploy service $NAME")
 	}
 	if len(tail) > 0 {
 		return errors.New("too many arguments")
@@ -129,12 +131,19 @@ func createService(args []string, opts serviceOpts) error {
 	if max < min {
 		return errors.New("max must be greater than min")
 	}
-	if opts.containerName == "" {
-		return errors.New("empty container name")
+
+	dockerClient, err := client.NewEnvClient()
+	if err != nil {
+		return fmt.Errorf("new env client: %s", err)
 	}
+	err = buildImage(dockerClient, conf.DockerRegistry, arg)
+	if err != nil {
+		return fmt.Errorf("build image: %w", err)
+	}
+
 	data := yeoman.ServiceOpts{
 		Name:        arg,
-		Container:   opts.containerName,
+		Container:   arg,
 		MachineType: opts.machineType,
 		DiskSizeGB:  opts.diskSizeGB,
 		AllowHTTP:   opts.allowHTTP,
@@ -181,7 +190,7 @@ func destroyService(args []string, opts serviceOpts) error {
 	arg, tail := parseArg(args)
 	switch arg {
 	case "", "help":
-		return emptyArgError("create service $NAME")
+		return emptyArgError("destroy service $NAME")
 	}
 	if len(tail) > 0 {
 		return errors.New("too many arguments")
@@ -292,7 +301,8 @@ func parseArg(args []string) (string, []string) {
 }
 
 type config struct {
-	IPs []netip.AddrPort `json:"ips"`
+	IPs            []netip.AddrPort `json:"ips"`
+	DockerRegistry string           `json:"dockerRegistry"`
 }
 
 func parseConfig() (config, error) {
@@ -336,4 +346,85 @@ func responseOK(rsp *http.Response) error {
 	default:
 		return fmt.Errorf("unexpected status code %d", rsp.StatusCode)
 	}
+}
+
+func buildImage(
+	client *client.Client,
+	dockerRegistry, serviceName string,
+) error {
+	ctx := context.Background()
+	buf := new(bytes.Buffer)
+	tw := tar.NewWriter(buf)
+	defer func() { _ = tw.Close() }()
+
+	filename := filepath.Join(serviceName, "Dockerfile")
+	r, err := os.Open(filename)
+	if err != nil {
+		return fmt.Errorf("open: %w", err)
+	}
+	byt, err := ioutil.ReadAll(r)
+	if err != nil {
+		return fmt.Errorf("read all: %w", err)
+	}
+	header := &tar.Header{
+		Name: filename,
+		Size: int64(len(byt)),
+	}
+	if err = tw.WriteHeader(header); err != nil {
+		return fmt.Errorf("write header: %w", err)
+	}
+	if _, err = tw.Write(byt); err != nil {
+		return fmt.Errorf("write: %w", err)
+	}
+
+	rdr := bytes.NewReader(buf.Bytes())
+	tag := fmt.Sprintf("%s/%s:latest", dockerRegistry, serviceName)
+	buildOpts := types.ImageBuildOptions{
+		Context:    r,
+		Dockerfile: filename,
+		Tags:       []string{tag},
+		Remove:     true,
+	}
+	rsp, err := client.ImageBuild(ctx, rdr, buildOpts)
+	if err != nil {
+		return fmt.Errorf("image build: %w", err)
+	}
+	defer func() { _ = rsp.Body.Close() }()
+
+	_, err = io.Copy(os.Stdout, rsp.Body)
+	if err != nil {
+		return fmt.Errorf("copy: %w", err)
+	}
+
+	tokenSource, err := google.DefaultTokenSource(ctx)
+	if err != nil {
+		return fmt.Errorf("default token source: %w", err)
+	}
+	token, err := tokenSource.Token()
+	if err != nil {
+		return fmt.Errorf("token: %w", err)
+	}
+
+	authConfig := types.AuthConfig{
+		Username: "oauth2accesstoken",
+		Password: token.AccessToken,
+	}
+	authConfigJSON, err := json.Marshal(authConfig)
+	if err != nil {
+		return fmt.Errorf("marshal: %w", err)
+	}
+	pushOpts := types.ImagePushOptions{
+		RegistryAuth: base64.URLEncoding.EncodeToString(authConfigJSON),
+	}
+	readCloser, err := client.ImagePush(ctx, tag, pushOpts)
+	if err != nil {
+		return fmt.Errorf("image push: %w", err)
+	}
+	defer func() { _ = readCloser.Close() }()
+
+	if _, err = io.Copy(os.Stdout, readCloser); err != nil {
+		return fmt.Errorf("copy: %w", err)
+	}
+
+	return nil
 }

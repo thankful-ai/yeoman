@@ -43,7 +43,6 @@ func NewRouter(opts RouterOpts) *Router {
 		r.Post("/", e(rt.postService))
 		r.Route("/{name}", func(r chi.Router) {
 			r.Get("/", e(rt.getService))
-			r.Post("/deploy", e(rt.deployService))
 			r.Delete("/", e(rt.deleteService))
 		})
 	})
@@ -70,6 +69,8 @@ func (rt *Router) getServices(
 	return services, nil
 }
 
+// postService creates a config file in the Store recording the existence and
+// settings of this service if needed. It deploys a container.
 func (rt *Router) postService(
 	w http.ResponseWriter,
 	r *http.Request,
