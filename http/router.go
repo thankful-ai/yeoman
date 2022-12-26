@@ -79,7 +79,12 @@ func (rt *Router) postService(
 	if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
 		return nil, badRequest(fmt.Errorf("decode: %w", err))
 	}
-	fmt.Printf("GOT DATA: %+v\n", data)
+
+	/*
+		if data.Name == "proxy" {
+			return nil, errors.New("cannot deploy proxy")
+		}
+	*/
 
 	// It may be appropriate to set up locking around this in case many
 	// people are making simultaneous changes, but that adds a lot of
@@ -173,6 +178,13 @@ func (rt *Router) deleteService(
 	r *http.Request,
 ) (interface{}, error) {
 	name := chi.URLParam(r, "name")
+
+	/*
+		if name == "proxy" {
+			return nil, errors.New("cannot delete proxy")
+		}
+	*/
+
 	ctx := r.Context()
 	services, err := rt.store.GetServices(ctx)
 	if err != nil {

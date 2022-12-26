@@ -204,3 +204,21 @@ x automatically reboot all machines every 24 hours
   automatically run `docker push` and set the tag for you?
 	> don't use :latest, seems to be bad practice.
 - think through command line interface
+
+- create static ips for reverse proxy, add -static flag to service deploy.
+	- best practice guide?
+		yeoman -autoscale 3 -static -http service deploy proxy
+			> creates 3 static IPs if not available.
+			... should we automatically update dns to point at
+				them?
+			... maybe not in v1, learn more then add complexity if
+				it's needed.
+		yeoman -autoscale 3:5 service deploy abc
+			> should proxy folders be go:embed into cmd/yeoman, so
+			> it can automatically build the proxy? i.e. it's built
+			> in, you don't need to use it, but it's an easy way to
+			> start.
+- do we need health checking for reverse proxies? seems like it's questionable
+  value since they're in the dns a-records, unless you automatically manage dns
+  too. you should check health of reverse proxies through external health
+  checks...

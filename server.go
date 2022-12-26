@@ -50,6 +50,26 @@ func (s *Server) Start(
 	if err != nil {
 		return fmt.Errorf("get services: %w", err)
 	}
+
+	// Ensure we have a proxy service, which can never be deleted or
+	// removed.
+	/*
+		if _, exist := opts["proxy"]; !exist {
+			opts["proxy"] = ServiceOpts{
+				Name:        "proxy",
+				MachineType: "e2-micro",
+				DiskSizeGB:  10,
+				AllowHTTP:   true,
+				Min:         1, // TODO(egtann) set to 3.
+				Max:         1,
+			}
+			if err = s.store.SetServices(ctx, opts); err != nil {
+				return fmt.Errorf("set proxy service: %w", err)
+			}
+
+			// TODO(egtann) create and upload the image?
+		}
+	*/
 	s.services = make([]*Service, 0, len(providerRegistries)*len(opts))
 
 	terra := tf.New(5 * time.Minute)
