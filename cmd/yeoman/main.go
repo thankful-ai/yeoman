@@ -1,7 +1,6 @@
 package main
 
 import (
-	"archive/tar"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -10,12 +9,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math/rand"
 	"net/http"
 	"net/netip"
 	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,6 +22,7 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/egtann/yeoman"
 	"github.com/hashicorp/go-multierror"
+	"github.com/jhoonb/archivex"
 	"golang.org/x/oauth2/google"
 )
 
@@ -351,44 +349,40 @@ func buildImage(
 	dockerRegistry, serviceName string,
 ) error {
 	ctx := context.Background()
-	buf := new(bytes.Buffer)
-	tw := tar.NewWriter(buf)
-	defer func() { _ = tw.Close() }()
 
-	filename := filepath.Join(serviceName, "Dockerfile")
-	r, err := os.Open(filename)
+	tar := &archivex.TarFile{}
+	tarFilename := fmt.Sprintf("/tmp/yeoman-%s.tar", serviceName)
+	err := tar.Create(tarFilename)
 	if err != nil {
-		return fmt.Errorf("open: %w", err)
+		return fmt.Errorf("tar create: %w", err)
 	}
-	byt, err := ioutil.ReadAll(r)
+	if err = tar.AddAll(serviceName, false); err != nil {
+		return fmt.Errorf("tar add all: %w", err)
+	}
+	if err = tar.Close(); err != nil {
+		return fmt.Errorf("tar close: %w", err)
+	}
+	buildContext, err := os.Open(tarFilename)
 	if err != nil {
-		return fmt.Errorf("read all: %w", err)
+		return fmt.Errorf("open tar: %w", err)
 	}
-	header := &tar.Header{
-		Name: filename,
-		Size: int64(len(byt)),
-	}
-	if err = tw.WriteHeader(header); err != nil {
-		return fmt.Errorf("write header: %w", err)
-	}
-	if _, err = tw.Write(byt); err != nil {
-		return fmt.Errorf("write: %w", err)
-	}
+	defer func() { _ = buildContext.Close() }()
 
-	rdr := bytes.NewReader(buf.Bytes())
 	tag := fmt.Sprintf("%s/%s:latest", dockerRegistry, serviceName)
 	buildOpts := types.ImageBuildOptions{
-		Context:    r,
-		Dockerfile: filename,
-		Tags:       []string{tag},
-		Remove:     true,
+		Context: buildContext,
+		Tags:    []string{tag},
+		Remove:  true,
 	}
-	rsp, err := client.ImageBuild(ctx, rdr, buildOpts)
+
+	rsp, err := client.ImageBuild(ctx, buildContext, buildOpts)
 	if err != nil {
 		return fmt.Errorf("image build: %w", err)
 	}
 	defer func() { _ = rsp.Body.Close() }()
 
+	// TODO(egtann) errors come through in the response as JSON with a key
+	// of "errorDetail". Why do you hate me, Docker?
 	_, err = io.Copy(os.Stdout, rsp.Body)
 	if err != nil {
 		return fmt.Errorf("copy: %w", err)
