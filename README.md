@@ -213,6 +213,8 @@ x automatically reboot all machines every 24 hours
 				them?
 			... maybe not in v1, learn more then add complexity if
 				it's needed.
+			... actually is needed in v1 for security updates with
+				100% uptime.
 		yeoman -autoscale 3:5 service deploy abc
 			> should proxy folders be go:embed into cmd/yeoman, so
 			> it can automatically build the proxy? i.e. it's built
@@ -222,3 +224,13 @@ x automatically reboot all machines every 24 hours
   value since they're in the dns a-records, unless you automatically manage dns
   too. you should check health of reverse proxies through external health
   checks...
+
+- We will use DNS and automatically publish and keep A-records up-to-date. This
+  is needed to reboot the servers every day for security updates, particularly
+  in SRP. Internal IPs will be published on a public DNS server (different
+  domain) which is maybe not 100% ideal but simplifies things by a huge amount
+  in terms of internal TLS and DNS -- can just behave like the normal public
+  network.
+- Secrets and env management will be done by yeoman.
+- I dislike the fly.toml file existing locally but state also existing
+  server-side. Complexity to sync those two things is very high!
