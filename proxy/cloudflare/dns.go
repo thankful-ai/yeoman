@@ -1,6 +1,7 @@
 package cloudflare
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -123,10 +124,64 @@ func (c *Cloudflare) listPage(
 	return entries, ri.Count > ri.Page*ri.PerPage, nil
 }
 
-func (c *Cloudflare) Create(context.Context, proxy.DNSEntry) error {
+func (c *Cloudflare) Create(ctx context.Context, entry proxy.DNSEntry) error {
+	data := struct {
+		Content  string   `json:"content"`
+		Name     string   `json:"name"`
+		Priority int      `json:"priority"`
+		Tags     []string `json:"tags"`
+		TTL      int      `json:"ttl"`
+		Proxied  bool     `json:"proxied"`
+		Comment  string   `json:"comment"`
+	}{
+		Content:  entry.IP.String(),
+		Name:     entry.Name,
+		Priority: 10,
+		Tags:     []string{"yeoman"},
+		TTL:      60,
+	}
+	byt, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("marshal: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL,
+		bytes.NewReader(byt))
+	if err != nil {
+		return fmt.Errorf("new request: %w", err)
+	}
+	rsp, err := c.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("do: %w", err)
+	}
+	defer func() { _ = rsp.Body.Close() }()
+
+	if rsp.StatusCode != http.StatusOK {
+		byt, _ := io.ReadAll(rsp.Body)
+		return nil, fmt.Errorf("bad status code %d: %s",
+			rsp.StatusCode, string(byt))
+	}
+	return nil
 }
 
-func (c *Cloudflare) Delete(context.Context, proxy.DNSEntry) error {
+func (c *Cloudflare) Delete(ctx context.Context, entry proxy.DNSEntry) error {
+	uri := fmt.Sprintf("%s/%s", baseURL, entry.ID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, uri,
+		nil)
+	if err != nil {
+		return fmt.Errorf("new request: %w", err)
+	}
+	rsp, err := c.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("do: %w", err)
+	}
+	defer func() { _ = rsp.Body.Close() }()
+
+	if rsp.StatusCode != http.StatusOK {
+		byt, _ := io.ReadAll(rsp.Body)
+		return nil, fmt.Errorf("bad status code %d: %s",
+			rsp.StatusCode, string(byt))
+	}
+	return nil
 }
 
 func (c *Cloudflare) do(
