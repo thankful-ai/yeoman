@@ -43,39 +43,39 @@ type Registry struct {
 	//
 	// * IPs with optional healthcheck paths, OR
 	// * A redirect to another hostname
-	Services map[string]*backend
+	Services map[string]*backend `json:"services"`
 
 	// API restricts internal API access to a subnet, which should be an
 	// private LAN.
-	API struct{ Subnet string }
+	API struct{ Subnet string } `json:"api,omitempty"`
 }
 
 // redirect describes how the proxy should redirect to another host.
 type redirect struct {
 	// URL to which the proxy should redirect. If DiscardPath is false (the
 	// default), the URL's path will be overwritten.
-	URL string
+	URL string `json:"url"`
 
 	// url is the parsed form of URL.
 	url *url.URL
 
 	// Permanent indicates whether the client should redirect itself in
 	// future requests. By default the redirect is temporary.
-	Permanent bool
+	Permanent bool `json:"permanent"`
 
 	// DiscardPath will strip any path for the URL while redirecting. By
 	// default the path is preserved.
-	DiscardPath bool
+	DiscardPath bool `json:"discardPath"`
 }
 
 type backend struct {
-	HealthPath   string
-	Backends     []string
+	HealthPath   string   `json:"healthPath,omitempty"`
+	Backends     []string `json:"backends,omitempty"`
 	liveBackends []string
 
 	// Redirect from a given hostname to another. If provided, HealthPath
 	// and Backends MUST be empty.
-	Redirect *redirect
+	Redirect *redirect `json:"redirect,omitempty"`
 }
 
 // Logger logs error messages for the caller where those errors don't require

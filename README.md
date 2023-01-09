@@ -234,3 +234,10 @@ x automatically reboot all machines every 24 hours
 - Secrets and env management will be done by yeoman.
 - I dislike the fly.toml file existing locally but state also existing
   server-side. Complexity to sync those two things is very high!
+
+### Proxy
+
+- When a proxy comes online, it needs to append itself to DNS
+  entries/cloudflare.
+	yeoman service deploy proxy
+- When a proxy goes offline, yeoman needs to remove it.
