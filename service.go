@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand"
 	"net"
 	"net/http"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"github.com/egtann/yeoman/terrafirma"
 	tf "github.com/egtann/yeoman/terrafirma"
 	"github.com/rs/zerolog"
+	"github.com/thejerf/suture/v4"
 )
 
 // TODO(egtann) perhaps copy Heroku's p95 response time metric, rather than
@@ -37,11 +39,11 @@ const (
 	scaleDownAverageLoad = 0.3
 )
 
-// Service represents a deployed app across one or more VMs.
-//
-// TODO(egtann) each service should correspond to a single version of a
-// container. New deploys create new services. With this design the autoscaling
-// across versions is solved automatically.
+// Service represents a deployed app across one or more VMs. A service does not
+// need to monitor for changes made to its definition. Services are immutable.
+// Any changes to ServiceOpts will result in the Server shutting down this
+// service and booting a new one with the new options in place. This
+// dramatically simplifies the logic.
 type Service struct {
 	opts ServiceOpts
 
@@ -49,9 +51,12 @@ type Service struct {
 	cloudProvider tf.CloudProviderName
 	store         Store
 	proxy         Proxy
+	log           zerolog.Logger
+	reporter      Reporter
 
-	log      zerolog.Logger
-	reporter Reporter
+	// supervisor to monitor the service using various checks to autoscale,
+	// recreate boxes, etc. as needed.
+	supervisor *suture.Supervisor
 }
 
 func newService(
@@ -63,6 +68,23 @@ func newService(
 	reporter Reporter,
 	opts ServiceOpts,
 ) *Service {
+	supervisor := suture.New(fmt.Sprintf("srv_%s", opts.Name), suture.Spec{
+		EventHook: func(ev suture.Event) {
+			reporter.Report(errors.New(ev.String()))
+		},
+	})
+
+	// Processes to monitor:
+	// - statChecker: Retrieve current health, load.
+	// - boundChecker: Confirm num of servers are within bounds.
+	// - autoscaler: Confirm num of services is appropriate for current load.
+
+	// TODO(egtann) these can all share state of the current VMs.
+	statCh := make(chan map[string]stats)
+	_ = supervisor.Add(&statChecker{statCh: statCh})
+	_ = supervisor.Add(&boundChecker{})
+	_ = supervisor.Add(&autoscaler{})
+
 	return &Service{
 		log: log.With().
 			Str("name", opts.Name).
@@ -72,6 +94,7 @@ func newService(
 		store:         store,
 		proxy:         proxy,
 		reporter:      reporter,
+		supervisor:    supervisor,
 		opts:          opts,
 	}
 }
@@ -81,16 +104,12 @@ func newService(
 //
 // Autoscaling is considered disabled if Min and Max are the same value.
 type ServiceOpts struct {
-	Name string `json:"name"`
-
+	Name        string `json:"name"`
 	MachineType string `json:"machineType"`
 	DiskSizeGB  int    `json:"diskSizeGB"`
 	AllowHTTP   bool   `json:"allowHTTP"`
-
-	// Min and Max are the only two mutable values once a service has been
-	// created.
-	Min int `json:"min"`
-	Max int `json:"max"`
+	Min         int    `json:"min"`
+	Max         int    `json:"max"`
 }
 
 type stats struct {
@@ -123,6 +142,10 @@ func movingAverageLoad(loads []float64) float64 {
 		f += load
 	}
 	return f / float64(len(loads))
+}
+
+func (s *Service) Serve(ctx context.Context) error {
+
 }
 
 // start a monitor for each service which when started will pull down the
@@ -729,5 +752,193 @@ func recoverPanic(reporter Reporter) {
 		fmt.Fprintf(os.Stderr, "panicked: %v", r)
 		reporter.Report(fmt.Errorf("panicked: %v", r))
 		os.Exit(1)
+	}
+}
+
+// statChecker retrieves current health and load information for a service.
+type statChecker struct {
+	stats  map[string][]stats
+	statCh chan<- map[string]stats
+}
+
+func (c *statChecker) Serve(ctx context.Context) error {
+	for {
+		select {
+		case <-time.After(6 * time.Second):
+			// Keep going
+		case err := <-ctx.Done():
+			return err
+		}
+
+		// Get current VMs in case they were created manually or
+		// changed in some way.
+		vms, err := s.getVMs()
+		if err != nil {
+			return fmt.Errorf("get vms: %w", err)
+		}
+		rand.Shuffle(len(vms), func(i, j int) {
+			vms[i], vms[j] = vms[j], vms[i]
+		})
+		allStats := make(map[string]stats, len(vms))
+		for _, vm := range vms {
+			stat, err := s.getStats(vm.vm, 3*time.Second)
+			if err != nil {
+				return fmt.Errorf("get stats: %w", err)
+			}
+			c.stats[vm.Name] = append(c.stats, stat)
+			switch len(c.stats[vm.Name]) {
+			case 1, 2, 3, 4:
+				// We don't have enough data. Continue to
+				// collect stats internally but there's no need
+				// to notify the
+				continue
+			case 6:
+				c.stats[vm.Name] = c.stats[vm.Name][1:]
+				fallthrough
+			case 5:
+				// Use the moving average across 5 time periods
+				// to determine the true load, rather than a
+				// snapshot moment in time. We want to scale up
+				// under sustained load, not a flash in the
+				// pan, since it'll take longer to boot a new
+				// VM than just processing the web request in
+				// most circumstances.
+				loads := make([]float64, 0, len(c.stats[vm.Name]))
+				for _, stat := range c.stats[vm.Name] {
+					loads = append(loads, stat.load)
+				}
+				allStats[vm.Name] = stats{
+					healthy: stat.healthy,
+					load:    movingAverageLoad(loads),
+				}
+			default:
+				// Should be impossible since we always
+				// truncate 6 down to 5.
+				panic("invalid stat length")
+			}
+		}
+
+		// If we have enough data on a service's health to communicate,
+		// send it now.
+		if len(allStats) > 0 {
+			statCh <- allStats
+		}
+	}
+	return nil
+}
+
+type boundChecker struct{}
+
+func (t *boundChecker) Serve(ctx context.Context) error {
+	for {
+		select {
+		case <-time.After(time.Minute):
+			// Keep going
+		case err := <-ctx.Done():
+			return err
+		}
+
+		// Get current number of VMs
+		vms, err := s.getVMs()
+		if err != nil {
+			s.reporter.Report(fmt.Errorf("get vms: %w", err))
+			continue
+		}
+		switch {
+		case len(vms) > opts.Max:
+			s.log.Info().
+				Int("want", opts.Max).
+				Int("have", len(vms)).
+				Msg("too many vms, tearing down")
+			var err error
+			vms, err = s.teardownVMs(vms, opts.Max)
+			if err != nil {
+				s.reporter.Report(
+					fmt.Errorf("teardown vms above max: %w", err))
+			}
+			continue
+		case len(vms) < opts.Min:
+			s.log.Info().
+				Int("want", opts.Min).
+				Int("have", len(vms)).
+				Msg("too few vms, starting up")
+			var err error
+			vms, err = s.startupVMs(opts, vms)
+			if err != nil {
+				s.reporter.Report(
+					fmt.Errorf("startup vms below min: %w", err))
+			}
+			continue
+		}
+	}
+}
+
+// TODO(egtann) all the teardown and startup commands should be issued through
+// a channel, so they're ordered and never conflict, e.g. starting up and
+// shutting down a service should never happen at the same time.
+type autoscaler struct {
+	statCh <-chan map[string]stats
+}
+
+func (a *autoscaler) Serve(ctx context.Context) error {
+	for {
+		select {
+		case allStats <- statCh:
+			for vmName, stat := range allStats {
+				switch {
+				case movingAvg > scaleUpAverageLoad:
+					if opts.Max >= len(vms) {
+						s.log.Debug().Msg("high load, skipping autoscale at maximum")
+						continue
+					}
+					s.log.Info().
+						Float64("scaleUpAverageLoad", scaleUpAverageLoad).
+						Float64("movingAverage", movingAvg).
+						Msg("autoscale starting up vms")
+
+					// We scale up more servers synchronously.
+					// While scaling is taking place, we can't
+					// continue, since we'll scale up to the max
+					// number of servers right away (probably
+					// needlessly) given the delay to boot a server
+					// vs the amount of time it takes to process
+					// requests. It might be 10s before we see a
+					// drop in load even after the VM is booted,
+					// since it'll take some time for existing
+					// requests to finish and the reverse proxy to
+					// send enough traffic to the new boxes.
+					var err error
+					vms, err = s.startupVMs(opts, vms)
+					if err != nil {
+						s.reporter.Report(
+							fmt.Errorf("startup vms autoscale: %w", err))
+					}
+					continue
+				case movingAvg < scaleDownAverageLoad:
+					if len(vms) == 0 {
+						continue
+					}
+					if opts.Min <= len(vms) {
+						s.log.Debug().Msg("low load, skipping autoscale at minimum")
+						continue
+					}
+
+					s.log.Info().
+						Float64("scaleDownAverageLoad", scaleDownAverageLoad).
+						Float64("movingAverage", movingAvg).
+						Msg("autoscale tearing down vms")
+
+					var err error
+					vms, err = s.autoscaleTeardownVMs(vms)
+					if err != nil {
+						s.reporter.Report(
+							fmt.Errorf("autoscale teardown vms: %w", err))
+					}
+					continue
+				}
+			}
+		case err := <-ctx.Done():
+			return err
+		}
 	}
 }

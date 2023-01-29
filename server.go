@@ -2,6 +2,7 @@ package yeoman
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/egtann/yeoman/terrafirma/gcp"
 	"github.com/hashicorp/go-multierror"
 	"github.com/rs/zerolog"
+	"github.com/thejerf/suture/v4"
 )
 
 // Server tracks the state of services, manages autoscaling, and handles
@@ -24,6 +26,9 @@ type Server struct {
 	services   []*Service
 	serviceSet map[string]*Service
 	mu         sync.RWMutex
+
+	// supervisor to manage services.
+	supervisor *suture.Supervisor
 }
 
 type ServerOpts struct {
@@ -34,21 +39,68 @@ type ServerOpts struct {
 }
 
 func NewServer(opts ServerOpts) *Server {
+	supervisor := suture.New("server", suture.Spec{
+		EventHook: func(ev suture.Event) {
+			opts.Reporter.Report(errors.New(ev.String()))
+		},
+	})
+
+	// Processes to monitor:
+	// * Check if any services have been deleted, reap them
+	// * Check if any services have been changed, delete and recreate
+
 	return &Server{
 		log:        opts.Log,
 		store:      opts.Store,
 		proxy:      opts.Proxy,
 		reporter:   opts.Reporter,
+		supervisor: supervisor,
 		serviceSet: map[string]*Service{},
 	}
 }
 
-func (s *Server) Start(
+// Targeted process structure:
+// Server > Provider > Service
+// * Server is the root responsible for everything else.
+// * Provider monitors a single provider.
+// * Service represents one or more VMs.
+func (s *Server) Serve(
 	ctx context.Context,
 	providerRegistries map[tf.CloudProviderName]ContainerRegistry,
 ) error {
 	s.log.Info().Msg("starting server")
 
+	opts, err := s.store.GetServices(ctx)
+	if err != nil {
+		return fmt.Errorf("get services: %w", err)
+	}
+	for _, opt := range opts {
+		serviceLog := providerLog.With().
+			Str("service", opt.Name).
+			Logger()
+		service := newService(serviceLog, terra, cp, s.store, s.proxy,
+			s.reporter, opt)
+
+		// TODO(egtann) Do I need the service token to later remove it?
+		_ = s.supervisor.Add(service)
+	}
+
+	errCh := s.supervisor.ServeBackground(ctx)
+	go func() {
+		for err := range errCh {
+			if err != nil {
+				s.log.Error().Err(err).Msg("serve background")
+			}
+		}
+	}()
+	return nil
+}
+
+// TODO XXX
+func todoUseSomewhere(
+	ctx context.Context,
+	providerRegistries map[tf.CloudProviderName]ContainerRegistry,
+) error {
 	opts, err := s.store.GetServices(ctx)
 	if err != nil {
 		return fmt.Errorf("get services: %w", err)

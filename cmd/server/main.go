@@ -46,6 +46,7 @@ func run() error {
 			Path: "us-central1-docker.pkg.dev/personal-199119/yeoman-dev",
 		},
 	}
+
 	if err := server.Start(ctx, providerRegistries); err != nil {
 		return fmt.Errorf("server start: %w", err)
 	}
