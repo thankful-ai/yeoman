@@ -27,7 +27,7 @@ type Server struct {
 	serviceSet map[string]*Service
 	mu         sync.RWMutex
 
-	// supervisor to manage services.
+	// supervisor to manage providers.
 	supervisor *suture.Supervisor
 }
 

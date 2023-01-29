@@ -75,7 +75,7 @@ func newService(
 	})
 
 	// Processes to monitor:
-	// - statChecker: Retrieve current health, load.
+	// - statChecker: Retrieve current health and load.
 	// - boundChecker: Confirm num of servers are within bounds.
 	// - autoscaler: Confirm num of services is appropriate for current load.
 
