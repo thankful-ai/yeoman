@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -356,7 +357,7 @@ func buildImage(
 	if err != nil {
 		return fmt.Errorf("tar create: %w", err)
 	}
-	if err = tar.AddAll(serviceName, false); err != nil {
+	if err = tar.AddAll(".", false); err != nil {
 		return fmt.Errorf("tar add all: %w", err)
 	}
 	if err = tar.Close(); err != nil {
@@ -370,9 +371,10 @@ func buildImage(
 
 	tag := fmt.Sprintf("%s/%s:latest", dockerRegistry, serviceName)
 	buildOpts := types.ImageBuildOptions{
-		Context: buildContext,
-		Tags:    []string{tag},
-		Remove:  true,
+		Context:    buildContext,
+		Dockerfile: filepath.Join(serviceName, "Dockerfile"),
+		Tags:       []string{tag},
+		Remove:     true,
 	}
 
 	rsp, err := client.ImageBuild(ctx, buildContext, buildOpts)

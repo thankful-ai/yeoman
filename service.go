@@ -48,6 +48,7 @@ type Service struct {
 	terra         *tf.Terrafirma
 	cloudProvider tf.CloudProviderName
 	store         Store
+	proxy         Proxy
 
 	log      zerolog.Logger
 	reporter Reporter
@@ -58,6 +59,7 @@ func newService(
 	terra *tf.Terrafirma,
 	cloudProvider tf.CloudProviderName,
 	store Store,
+	proxy Proxy,
 	reporter Reporter,
 	opts ServiceOpts,
 ) *Service {
@@ -68,6 +70,7 @@ func newService(
 		terra:         terra,
 		cloudProvider: cloudProvider,
 		store:         store,
+		proxy:         proxy,
 		reporter:      reporter,
 		opts:          opts,
 	}
@@ -194,6 +197,14 @@ func (s *Service) start() {
 					s.reporter.Report(
 						fmt.Errorf("startup vms below min: %w", err))
 				}
+				continue
+			}
+
+			// We don't check health or autoscale the reverse proxy.
+			//
+			// TODO(egtann) make this apparent in some way to users
+			// or revisit :)
+			if opts.Name == "proxy" {
 				continue
 			}
 
@@ -574,11 +585,18 @@ func (s *Service) startupVMs(
 		}
 	}
 
-	// TODO(egtann) update @proxy of the new IPs.
-	// s.proxy.Update(
-
 	// All VMs reported that they're healthy.
 	s.log.Info().Msg("services on new vms reported healthy")
+
+	// Update the proxy of the new IPs.
+	if opts.Name != "proxy" {
+		ips := make([]string, 0, len(vms))
+		for _, vm := range vms {
+			ips = append(ips, internalIP(vm.vm))
+		}
+		s.proxy.UpsertService(opts.Name, ips)
+	}
+
 	return vms, nil
 }
 

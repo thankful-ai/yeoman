@@ -19,6 +19,7 @@ import (
 type Server struct {
 	log        zerolog.Logger
 	store      Store
+	proxy      Proxy
 	reporter   Reporter
 	services   []*Service
 	serviceSet map[string]*Service
@@ -28,6 +29,7 @@ type Server struct {
 type ServerOpts struct {
 	Log      zerolog.Logger
 	Store    Store
+	Proxy    Proxy
 	Reporter Reporter
 }
 
@@ -35,6 +37,7 @@ func NewServer(opts ServerOpts) *Server {
 	return &Server{
 		log:        opts.Log,
 		store:      opts.Store,
+		proxy:      opts.Proxy,
 		reporter:   opts.Reporter,
 		serviceSet: map[string]*Service{},
 	}
@@ -112,7 +115,7 @@ func (s *Server) Start(
 				Logger()
 			serviceLog.Info().Msg("discovered service")
 			service := newService(serviceLog, terra, cp, s.store,
-				s.reporter, opt)
+				s.proxy, s.reporter, opt)
 			service.start()
 			s.serviceSet[opt.Name] = service
 			s.services = append(s.services, service)

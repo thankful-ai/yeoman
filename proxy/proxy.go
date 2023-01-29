@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/egtann/yeoman"
 	cleanhttp "github.com/hashicorp/go-cleanhttp"
 	"github.com/rs/xid"
 )
@@ -48,6 +49,23 @@ type Registry struct {
 	// API restricts internal API access to a subnet, which should be an
 	// private LAN.
 	API struct{ Subnet string } `json:"api,omitempty"`
+}
+
+var _ yeoman.Proxy = &ReverseProxy{}
+
+func (r *ReverseProxy) UpsertService(name string, ips []string) {
+	reg := r.cloneRegistry()
+
+	b := &backend{
+		Backends:   make([]string, 0, len(ips)),
+		HealthPath: "/health",
+	}
+	for _, ip := range ips {
+		b.Backends = append(b.Backends, ip)
+	}
+	reg.Services[name] = b
+
+	r.UpdateRegistry(reg)
 }
 
 // redirect describes how the proxy should redirect to another host.
