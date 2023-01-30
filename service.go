@@ -102,9 +102,7 @@ func newService(
 	// - autoscaler: Confirm num of services is appropriate for current load.
 
 	service := &Service{
-		log: log.With().
-			Str("name", opts.Name).
-			Logger(),
+		log:           log,
 		terra:         terra,
 		cloudProvider: cloudProvider,
 		store:         store,
@@ -172,6 +170,17 @@ func movingAverageLoad(loads []float64) float64 {
 }
 
 func (s *Service) Serve(ctx context.Context) error {
+	s.log.Debug().Msg("serving")
+
+	// TODO(egtann) handle errors
+	s.supervisor.ServeBackground(ctx)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	return nil
 }
 
@@ -776,6 +785,8 @@ type statChecker struct {
 }
 
 func (c *statChecker) Serve(ctx context.Context) error {
+	c.log.Debug().Msg("serving statchecker")
+
 	for {
 		select {
 		case <-time.After(6 * time.Second):
@@ -797,6 +808,9 @@ func (c *statChecker) Serve(ctx context.Context) error {
 				continue
 			}
 			c.stats[vm.vm.Name] = append(c.stats[vm.vm.Name], stat)
+			c.log.Info().
+				Int("count", len(c.stats[vm.vm.Name])).
+				Msg("got stats")
 			switch len(c.stats[vm.vm.Name]) {
 			case 1, 2, 3, 4:
 				// We don't have enough data. Continue to
@@ -847,6 +861,8 @@ func (b *boundChecker) Serve(ctx context.Context) error {
 	s := b.service
 	opts := s.opts
 
+	s.log.Debug().Msg("serving boundchecker")
+
 	for {
 		select {
 		case <-time.After(time.Minute):
@@ -896,6 +912,7 @@ type autoscaler struct {
 func (a *autoscaler) Serve(ctx context.Context) error {
 	s := a.service
 	opts := s.opts
+	s.log.Debug().Msg("serving autoscaler")
 
 	for {
 		select {

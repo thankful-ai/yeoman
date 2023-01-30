@@ -62,13 +62,14 @@ func NewServer(opts ServerOpts) *Server {
 // * Server is the root responsible for everything else.
 // * Provider monitors a single provider.
 // * Service represents one or more VMs.
-func (s *Server) Serve(
+func (s *Server) ServeBackground(
 	ctx context.Context,
 	providerRegistries map[tf.CloudProviderName]ContainerRegistry,
 ) error {
 	s.log.Info().Msg("starting server")
 
 	for cp, cr := range providerRegistries {
+		s.log.Info().Str("provider", string(cp)).Msg("using provider")
 		p, err := newProvider(ctx, cp, cr, s.store, s.proxy,
 			s.reporter, s.log)
 		if err != nil {

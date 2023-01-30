@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/egtann/yeoman"
 	"github.com/egtann/yeoman/google"
@@ -36,7 +35,7 @@ func run() error {
 		Store:    store,
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	// TODO(egtann) via a config file?
@@ -47,7 +46,7 @@ func run() error {
 		},
 	}
 
-	if err := server.Start(ctx, providerRegistries); err != nil {
+	if err := server.ServeBackground(ctx, providerRegistries); err != nil {
 		return fmt.Errorf("server start: %w", err)
 	}
 
@@ -59,6 +58,7 @@ func run() error {
 		select {
 		case <-shutdown:
 			log.Info().Msg("shutting down...")
+			cancel()
 			os.Exit(0)
 		}
 	}()

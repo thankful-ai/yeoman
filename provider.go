@@ -51,10 +51,10 @@ func newProvider(
 		region       = parts[2]
 		zone         = parts[3]
 	)
-	providerLog := log.With().Str("provider", providerName).Logger()
 
 	// Get all the services and create supervisors for each.
 	terra := tf.New(5 * time.Minute)
+	providerLog := log.With().Str("provider", string(name)).Logger()
 	switch providerName {
 	case "gcp":
 		tfGCP, err := gcp.New(providerLog, HTTPClient(), project,
@@ -73,11 +73,17 @@ func newProvider(
 		return nil, fmt.Errorf("get services: %w", err)
 	}
 	for _, opt := range opts {
-		serviceLog := log.With().Str("service", opt.Name).Logger()
+		serviceLog := providerLog.With().
+			Str("service", opt.Name).
+			Logger()
 
 		service := newService(serviceLog, terra, name, store, proxy,
 			reporter, vms, opt)
 		_ = supervisor.Add(service)
+
+		serviceLog.Info().
+			Str("service", opt.Name).
+			Msg("tracking service")
 	}
 
 	return &provider{
@@ -107,6 +113,11 @@ func compare[T comparable](X, Y []T) []T {
 }
 
 func (p *provider) Serve(ctx context.Context) error {
+	p.log.Debug().Msg("serving")
+
+	// TODO(egtann) handle errors
+	p.supervisor.ServeBackground(ctx)
+
 	for {
 		select {
 		case <-time.After(6 * time.Second):
