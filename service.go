@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand"
 	"net"
 	"net/http"
 	"os"
@@ -53,10 +52,32 @@ type Service struct {
 	proxy         Proxy
 	log           zerolog.Logger
 	reporter      Reporter
+	vms           concurrentSlice[*vmState]
 
 	// supervisor to monitor the service using various checks to autoscale,
 	// recreate boxes, etc. as needed.
 	supervisor *suture.Supervisor
+}
+
+func (s *Service) getVMs() []*vmState {
+	var out []*vmState
+	vms := copySlice(s.vms)
+	for _, vm := range vms {
+		// Filter to show only VMs related to this service and version.
+		parts := strings.Split(vm.vm.Name, "-")
+
+		// VM names are of the form:
+		// ym-$service-$index
+		if len(parts) != 3 {
+			continue
+		}
+		if parts[0] != "ym" ||
+			parts[1] != s.opts.Name {
+			continue
+		}
+		out = append(out, vm)
+	}
+	return out
 }
 
 func newService(
@@ -66,6 +87,7 @@ func newService(
 	store Store,
 	proxy Proxy,
 	reporter Reporter,
+	vms concurrentSlice[*vmState],
 	opts ServiceOpts,
 ) *Service {
 	supervisor := suture.New(fmt.Sprintf("srv_%s", opts.Name), suture.Spec{
@@ -79,13 +101,7 @@ func newService(
 	// - boundChecker: Confirm num of servers are within bounds.
 	// - autoscaler: Confirm num of services is appropriate for current load.
 
-	// TODO(egtann) these can all share state of the current VMs.
-	statCh := make(chan map[string]stats)
-	_ = supervisor.Add(&statChecker{statCh: statCh})
-	_ = supervisor.Add(&boundChecker{})
-	_ = supervisor.Add(&autoscaler{})
-
-	return &Service{
+	service := &Service{
 		log: log.With().
 			Str("name", opts.Name).
 			Logger(),
@@ -97,6 +113,17 @@ func newService(
 		supervisor:    supervisor,
 		opts:          opts,
 	}
+
+	statCh := make(chan map[string]stats)
+	_ = supervisor.Add(&statChecker{
+		log:     log,
+		statCh:  statCh,
+		service: service,
+	})
+	_ = supervisor.Add(&boundChecker{service: service})
+	_ = supervisor.Add(&autoscaler{service: service})
+
+	return service
 }
 
 // ServiceOpts contains the persistant state of a Service, as configured via
@@ -145,7 +172,7 @@ func movingAverageLoad(loads []float64) float64 {
 }
 
 func (s *Service) Serve(ctx context.Context) error {
-
+	return nil
 }
 
 // start a monitor for each service which when started will pull down the
@@ -171,12 +198,7 @@ func (s *Service) start() {
 			}
 
 			// Get current number of VMs
-			vms, err := s.getVMs()
-			if err != nil {
-				s.reporter.Report(
-					fmt.Errorf("get vms: %w", err))
-				continue
-			}
+			vms := s.getVMs()
 
 			// Get the current service definition. If it's been
 			// deleted, then we need to shutdown all VMs and the
@@ -233,7 +255,8 @@ func (s *Service) start() {
 
 			for _, vm := range vms {
 				var err error
-				vm.stats, err = s.getStats(vm.vm, 3*time.Second)
+				vm.stats, err = getStats(s.log, vm.vm,
+					3*time.Second)
 				if err != nil {
 					s.reporter.Report(fmt.Errorf(
 						"get stats: %w", err))
@@ -319,20 +342,8 @@ func (s *Service) start() {
 	}()
 }
 
-func (s *Service) getVMs() ([]*vmState, error) {
-	inventory, err := s.terra.Inventory()
-	if err != nil {
-		return nil, fmt.Errorf("inventory: %w", err)
-	}
-	tfVMs := inventory[s.cloudProvider]
-	vms := make([]*vmState, 0, len(tfVMs))
-	for _, tfVM := range tfVMs {
-		vms = append(vms, &vmState{vm: tfVM})
-	}
-	return vms, nil
-}
-
-func (s *Service) getStats(
+func getStats(
+	log zerolog.Logger,
 	vm *tf.VM,
 	timeout time.Duration,
 ) (stats, error) {
@@ -342,7 +353,7 @@ func (s *Service) getStats(
 	if ip == "" {
 		return zero, errors.New("missing internal ip")
 	}
-	s.log.Debug().
+	log.Debug().
 		Str("name", vm.Name).
 		Str("ip", ip).
 		Str("type", "internal").
@@ -379,7 +390,7 @@ func (s *Service) getStats(
 	if ip == "" {
 		return zero, errors.New("missing external ip")
 	}
-	s.log.Debug().
+	log.Debug().
 		Str("name", vm.Name).
 		Str("ip", ip).
 		Str("type", "external").
@@ -427,7 +438,11 @@ func getStatsContextWithIP(
 	return stats{healthy: true, load: data.Load}, nil
 }
 
-func (s *Service) pollUntilHealthy(vm *tf.VM, timeout time.Duration) error {
+func pollUntilHealthy(
+	log zerolog.Logger,
+	vm *tf.VM,
+	timeout time.Duration,
+) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
@@ -437,7 +452,7 @@ func (s *Service) pollUntilHealthy(vm *tf.VM, timeout time.Duration) error {
 		case <-ctx.Done():
 			return lastError
 		default:
-			if _, err := s.getStats(vm, timeout); err != nil {
+			if _, err := getStats(log, vm, timeout); err != nil {
 				lastError = fmt.Errorf("get stats: %w", err)
 				continue
 			}
@@ -465,10 +480,7 @@ func (s *Service) autoscaleTeardownVMs(vms []*vmState) ([]*vmState, error) {
 }
 
 func (s *Service) teardownAllVMs() error {
-	vms, err := s.getVMs()
-	if err != nil {
-		return fmt.Errorf("get vms: %w", err)
-	}
+	vms := s.getVMs()
 	toDelete := make([]*tf.VM, 0, len(vms))
 	for _, vm := range vms {
 		toDelete = append(toDelete, vm.vm)
@@ -596,7 +608,7 @@ func (s *Service) startupVMs(
 		vm := vm // Capture reference
 		go func() {
 			defer func() { recoverPanic(s.reporter) }()
-			errs <- s.pollUntilHealthy(vm.vm, 2*time.Minute)
+			errs <- pollUntilHealthy(s.log, vm.vm, 2*time.Minute)
 		}()
 	}
 	for i := 0; i < len(vms); i++ {
@@ -757,8 +769,10 @@ func recoverPanic(reporter Reporter) {
 
 // statChecker retrieves current health and load information for a service.
 type statChecker struct {
-	stats  map[string][]stats
-	statCh chan<- map[string]stats
+	log     zerolog.Logger
+	service *Service
+	stats   map[string][]stats
+	statCh  chan<- map[string]stats
 }
 
 func (c *statChecker) Serve(ctx context.Context) error {
@@ -766,34 +780,31 @@ func (c *statChecker) Serve(ctx context.Context) error {
 		select {
 		case <-time.After(6 * time.Second):
 			// Keep going
-		case err := <-ctx.Done():
-			return err
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 
 		// Get current VMs in case they were created manually or
 		// changed in some way.
-		vms, err := s.getVMs()
-		if err != nil {
-			return fmt.Errorf("get vms: %w", err)
-		}
-		rand.Shuffle(len(vms), func(i, j int) {
-			vms[i], vms[j] = vms[j], vms[i]
-		})
+		vms := c.service.getVMs()
 		allStats := make(map[string]stats, len(vms))
 		for _, vm := range vms {
-			stat, err := s.getStats(vm.vm, 3*time.Second)
+			stat, err := getStats(c.log, vm.vm, 3*time.Second)
 			if err != nil {
-				return fmt.Errorf("get stats: %w", err)
+				c.log.Error().
+					Err(err).
+					Msg("failed to get stats")
+				continue
 			}
-			c.stats[vm.Name] = append(c.stats, stat)
-			switch len(c.stats[vm.Name]) {
+			c.stats[vm.vm.Name] = append(c.stats[vm.vm.Name], stat)
+			switch len(c.stats[vm.vm.Name]) {
 			case 1, 2, 3, 4:
 				// We don't have enough data. Continue to
 				// collect stats internally but there's no need
 				// to notify the
 				continue
 			case 6:
-				c.stats[vm.Name] = c.stats[vm.Name][1:]
+				c.stats[vm.vm.Name] = c.stats[vm.vm.Name][1:]
 				fallthrough
 			case 5:
 				// Use the moving average across 5 time periods
@@ -803,11 +814,12 @@ func (c *statChecker) Serve(ctx context.Context) error {
 				// pan, since it'll take longer to boot a new
 				// VM than just processing the web request in
 				// most circumstances.
-				loads := make([]float64, 0, len(c.stats[vm.Name]))
-				for _, stat := range c.stats[vm.Name] {
+				loads := make([]float64, 0,
+					len(c.stats[vm.vm.Name]))
+				for _, stat := range c.stats[vm.vm.Name] {
 					loads = append(loads, stat.load)
 				}
-				allStats[vm.Name] = stats{
+				allStats[vm.vm.Name] = stats{
 					healthy: stat.healthy,
 					load:    movingAverageLoad(loads),
 				}
@@ -821,29 +833,29 @@ func (c *statChecker) Serve(ctx context.Context) error {
 		// If we have enough data on a service's health to communicate,
 		// send it now.
 		if len(allStats) > 0 {
-			statCh <- allStats
+			c.statCh <- allStats
 		}
 	}
 	return nil
 }
 
-type boundChecker struct{}
+type boundChecker struct {
+	service *Service
+}
 
-func (t *boundChecker) Serve(ctx context.Context) error {
+func (b *boundChecker) Serve(ctx context.Context) error {
+	s := b.service
+	opts := s.opts
+
 	for {
 		select {
 		case <-time.After(time.Minute):
 			// Keep going
-		case err := <-ctx.Done():
-			return err
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 
-		// Get current number of VMs
-		vms, err := s.getVMs()
-		if err != nil {
-			s.reporter.Report(fmt.Errorf("get vms: %w", err))
-			continue
-		}
+		vms := s.getVMs()
 		switch {
 		case len(vms) > opts.Max:
 			s.log.Info().
@@ -877,23 +889,28 @@ func (t *boundChecker) Serve(ctx context.Context) error {
 // a channel, so they're ordered and never conflict, e.g. starting up and
 // shutting down a service should never happen at the same time.
 type autoscaler struct {
-	statCh <-chan map[string]stats
+	service *Service
+	statCh  <-chan map[string]stats
 }
 
 func (a *autoscaler) Serve(ctx context.Context) error {
+	s := a.service
+	opts := s.opts
+
 	for {
 		select {
-		case allStats <- statCh:
-			for vmName, stat := range allStats {
+		case allStats := <-a.statCh:
+			vms := s.getVMs()
+			for _, stat := range allStats {
 				switch {
-				case movingAvg > scaleUpAverageLoad:
+				case stat.load > scaleUpAverageLoad:
 					if opts.Max >= len(vms) {
 						s.log.Debug().Msg("high load, skipping autoscale at maximum")
 						continue
 					}
 					s.log.Info().
 						Float64("scaleUpAverageLoad", scaleUpAverageLoad).
-						Float64("movingAverage", movingAvg).
+						Float64("movingAverage", stat.load).
 						Msg("autoscale starting up vms")
 
 					// We scale up more servers synchronously.
@@ -914,7 +931,7 @@ func (a *autoscaler) Serve(ctx context.Context) error {
 							fmt.Errorf("startup vms autoscale: %w", err))
 					}
 					continue
-				case movingAvg < scaleDownAverageLoad:
+				case stat.load < scaleDownAverageLoad:
 					if len(vms) == 0 {
 						continue
 					}
@@ -925,7 +942,7 @@ func (a *autoscaler) Serve(ctx context.Context) error {
 
 					s.log.Info().
 						Float64("scaleDownAverageLoad", scaleDownAverageLoad).
-						Float64("movingAverage", movingAvg).
+						Float64("movingAverage", stat.load).
 						Msg("autoscale tearing down vms")
 
 					var err error
@@ -937,8 +954,8 @@ func (a *autoscaler) Serve(ctx context.Context) error {
 					continue
 				}
 			}
-		case err := <-ctx.Done():
-			return err
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
 }

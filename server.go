@@ -7,10 +7,8 @@ import (
 	"math"
 	"strings"
 	"sync"
-	"time"
 
 	tf "github.com/egtann/yeoman/terrafirma"
-	"github.com/egtann/yeoman/terrafirma/gcp"
 	"github.com/hashicorp/go-multierror"
 	"github.com/rs/zerolog"
 	"github.com/thejerf/suture/v4"
@@ -70,19 +68,13 @@ func (s *Server) Serve(
 ) error {
 	s.log.Info().Msg("starting server")
 
-	opts, err := s.store.GetServices(ctx)
-	if err != nil {
-		return fmt.Errorf("get services: %w", err)
-	}
-	for _, opt := range opts {
-		serviceLog := providerLog.With().
-			Str("service", opt.Name).
-			Logger()
-		service := newService(serviceLog, terra, cp, s.store, s.proxy,
-			s.reporter, opt)
-
-		// TODO(egtann) Do I need the service token to later remove it?
-		_ = s.supervisor.Add(service)
+	for cp, cr := range providerRegistries {
+		p, err := newProvider(ctx, cp, cr, s.store, s.proxy,
+			s.reporter, s.log)
+		if err != nil {
+			return fmt.Errorf("new provider: %w", err)
+		}
+		_ = s.supervisor.Add(p)
 	}
 
 	errCh := s.supervisor.ServeBackground(ctx)
@@ -97,6 +89,7 @@ func (s *Server) Serve(
 }
 
 // TODO XXX
+/*
 func todoUseSomewhere(
 	ctx context.Context,
 	providerRegistries map[tf.CloudProviderName]ContainerRegistry,
@@ -124,7 +117,6 @@ func todoUseSomewhere(
 
 			// TODO(egtann) create and upload the image?
 		}
-	*/
 	s.services = make([]*Service, 0, len(providerRegistries)*len(opts))
 
 	terra := tf.New(5 * time.Minute)
@@ -368,6 +360,7 @@ func todoUseSomewhere(
 	}
 	return nil
 }
+*/
 
 func makeBatches[T any](items []T) [][]T {
 	var (
