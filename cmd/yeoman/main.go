@@ -15,8 +15,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/docker/docker/api/types"
@@ -42,7 +40,7 @@ func main() {
 }
 
 func run() error {
-	minMax := flag.String("n", "1", "min and max of servers (e.g. 3:5)")
+	count := flag.Int("c", 1, "count of servers")
 	machineType := flag.String("m", "e2-micro", "machine type")
 	diskSizeGB := flag.Int("d", 10, "disk size in GB")
 	allowHTTP := flag.Bool("http", false, "allow http")
@@ -54,7 +52,7 @@ func run() error {
 		return nil
 	case "service":
 		return service(tail, serviceOpts{
-			minMax:      *minMax,
+			count:       *count,
 			machineType: *machineType,
 			diskSizeGB:  *diskSizeGB,
 			allowHTTP:   *allowHTTP,
@@ -72,8 +70,7 @@ func run() error {
 }
 
 type serviceOpts struct {
-	// minMax in the form of "3:5".
-	minMax      string
+	count       int
 	machineType string
 	diskSizeGB  int
 	allowHTTP   bool
@@ -102,7 +99,7 @@ func deployService(args []string, opts serviceOpts) error {
 	arg, tail := parseArg(args)
 	switch arg {
 	case "", "help":
-		return emptyArgError("deploy service $NAME")
+		return emptyArgError("service deploy $NAME")
 	}
 	if len(tail) > 0 {
 		return errors.New("too many arguments")
@@ -110,25 +107,6 @@ func deployService(args []string, opts serviceOpts) error {
 	conf, err := parseConfig()
 	if err != nil {
 		return fmt.Errorf("parse config: %w", err)
-	}
-
-	minStr, maxStr, _ := strings.Cut(opts.minMax, ":")
-	min, err := strconv.Atoi(minStr)
-	if err != nil {
-		return fmt.Errorf("parse min: %w", err)
-	}
-	max := min
-	if maxStr != "" {
-		max, err = strconv.Atoi(maxStr)
-		if err != nil {
-			return fmt.Errorf("parse max: %w", err)
-		}
-	}
-	if min <= 0 {
-		return errors.New("min must be greater than 0")
-	}
-	if max < min {
-		return errors.New("max must be greater than min")
 	}
 
 	dockerClient, err := client.NewEnvClient()
@@ -145,8 +123,7 @@ func deployService(args []string, opts serviceOpts) error {
 		MachineType: opts.machineType,
 		DiskSizeGB:  opts.diskSizeGB,
 		AllowHTTP:   opts.allowHTTP,
-		Min:         min,
-		Max:         max,
+		Count:       opts.count,
 	}
 	byt, err := json.Marshal(data)
 	if err != nil {

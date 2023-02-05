@@ -32,12 +32,6 @@ import (
 // I think it's important that the application self-report its load. More work,
 // yes, but more control over actual load that the server is facing.
 
-// The following are load thresholds for autoscaling services up and down.
-const (
-	scaleUpAverageLoad   = 0.7
-	scaleDownAverageLoad = 0.3
-)
-
 // Service represents a deployed app across one or more VMs. A service does not
 // need to monitor for changes made to its definition. Services are immutable.
 // Any changes to ServiceOpts will result in the Server shutting down this
@@ -55,8 +49,8 @@ type Service struct {
 
 	jobManager *jobManager
 
-	// supervisor to monitor the service using various checks to autoscale,
-	// recreate boxes, etc. as needed.
+	// supervisor to monitor the service using various checks to recreate
+	// boxes, etc. as needed.
 	supervisor *suture.Supervisor
 }
 
@@ -96,16 +90,15 @@ func (jm *jobManager) Serve(ctx context.Context) error {
 				return fmt.Errorf("startup vms: %w", err)
 			}
 		case jtDestroy:
-			err := jm.service.teardownVMs(vms, jm.service.opts.Max)
+			err := jm.service.teardownVMs(vms, jm.service.opts.Count)
 			if err != nil {
 				return fmt.Errorf("teardown vms: %w", err)
 			}
 		}
 
 		// Wait between performing jobs, so services have a chance to
-		// shutdown, new servers can be booted, autoscaling can
-		// collection additional data, etc. before making another
-		// adjustment.
+		// shutdown, new servers can be booted, etc. before making
+		// another adjustment.
 		select {
 		case <-time.After(5 * time.Minute):
 		case <-ctx.Done():
@@ -175,9 +168,7 @@ func newService(
 	})
 
 	// Processes to monitor:
-	// - statChecker: Retrieve current health and load.
 	// - boundChecker: Confirm num of servers are within bounds.
-	// - autoscaler: Confirm num of services is appropriate for current load.
 	// - jobManager: Responsible for actually scaling servers up and down.
 
 	service := &Service{
@@ -193,16 +184,8 @@ func newService(
 	service.jobManager = newJobManager(log, service)
 
 	_ = supervisor.Add(service.jobManager)
-	_ = supervisor.Add(&statChecker{
-		log:     log.With().Str("task", "statChecker").Logger(),
-		service: service,
-	})
 	_ = supervisor.Add(&boundChecker{
 		log:     log.With().Str("task", "boundChecker").Logger(),
-		service: service,
-	})
-	_ = supervisor.Add(&autoscaler{
-		log:     log.With().Str("task", "autoscaler").Logger(),
 		service: service,
 	})
 
@@ -211,15 +194,12 @@ func newService(
 
 // ServiceOpts contains the persistant state of a Service, as configured via
 // `yeoman -n $count -c $container service create $name`.
-//
-// Autoscaling is considered disabled if Min and Max are the same value.
 type ServiceOpts struct {
 	Name        string `json:"name"`
 	MachineType string `json:"machineType"`
 	DiskSizeGB  int    `json:"diskSizeGB"`
 	AllowHTTP   bool   `json:"allowHTTP"`
-	Min         int    `json:"min"`
-	Max         int    `json:"max"`
+	Count       int    `json:"count"`
 }
 
 type stats struct {
@@ -446,7 +426,7 @@ func (s *Service) startupVMs(
 		},
 	}
 
-	toStart := opts.Min - len(vms)
+	toStart := opts.Count - len(vms)
 	plan := map[tf.CloudProviderName]*tf.ProviderPlan{
 		s.cloudProvider: &tf.ProviderPlan{
 			Create: make([]*tf.VMTemplate, 0, toStart),
@@ -670,59 +650,6 @@ func recoverPanic(reporter Reporter) {
 	}
 }
 
-// statChecker retrieves current health and load information for a service.
-type statChecker struct {
-	log     zerolog.Logger
-	service *Service
-}
-
-func (c *statChecker) Serve(ctx context.Context) error {
-	for {
-		// Get current VMs in case they were created manually or
-		// changed in some way.
-		vms := c.service.getVMs()
-		for i := range vms {
-			vm := vms[i]
-			stat, err := getStats(c.log, vm.vm, 3*time.Second)
-			if err != nil {
-				c.log.Error().
-					Err(err).
-					Msg("failed to get stats")
-				continue
-			}
-			vm.stats = append(vm.stats, stat)
-
-			c.log.Info().
-				Int("count", len(vm.stats)).
-				Msg("got stats")
-			switch len(vm.stats) {
-			case 1, 2, 3, 4:
-				// We don't have enough data. Continue to
-				// collect stats internally but there's no need
-				// to notify the
-				continue
-			case 6:
-				vm.stats = vm.stats[1:]
-				fallthrough
-			case 5:
-				setSlice(c.service.vms, vms)
-			default:
-				// Should be impossible since we always
-				// truncate 6 down to 5.
-				panic("invalid stat length")
-			}
-		}
-
-		select {
-		case <-time.After(6 * time.Second):
-			// Keep going
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-	return nil
-}
-
 type boundChecker struct {
 	log     zerolog.Logger
 	service *Service
@@ -737,29 +664,29 @@ func (b *boundChecker) Serve(ctx context.Context) error {
 	for {
 		vms := b.service.getVMs()
 		switch {
-		case len(vms) > opts.Max:
+		case len(vms) > opts.Count:
 			accepted := b.service.jobManager.attempt(job{jobType: jtDestroy})
 			if accepted {
 				b.log.Info().
-					Int("want", opts.Max).
+					Int("want", opts.Count).
 					Int("have", len(vms)).
 					Msg("too many vms, tearing down")
 			} else {
 				b.log.Info().
-					Int("want", opts.Max).
+					Int("want", opts.Count).
 					Int("have", len(vms)).
 					Msg("job rejected")
 			}
-		case len(vms) < opts.Min:
+		case len(vms) < opts.Count:
 			accepted := b.service.jobManager.attempt(job{jobType: jtCreate})
 			if accepted {
 				b.log.Info().
-					Int("want", opts.Min).
+					Int("want", opts.Count).
 					Int("have", len(vms)).
 					Msg("too few vms, starting up")
 			} else {
 				b.log.Info().
-					Int("want", opts.Max).
+					Int("want", opts.Count).
 					Int("have", len(vms)).
 					Msg("job rejected")
 			}
@@ -770,77 +697,6 @@ func (b *boundChecker) Serve(ctx context.Context) error {
 			// Keep going
 		case <-ctx.Done():
 			return ctx.Err()
-		}
-	}
-}
-
-type autoscaler struct {
-	log     zerolog.Logger
-	service *Service
-}
-
-func (a *autoscaler) Serve(ctx context.Context) error {
-	// Give our jobManager a second to boot.
-	time.Sleep(time.Second)
-
-	autoscale := func() (err error) {
-		defer func() {
-			select {
-			case <-time.After(6 * time.Second):
-			case <-ctx.Done():
-				err = ctx.Err()
-				return
-			}
-		}()
-
-		vms := a.service.getVMs()
-		switch {
-		case len(vms) < a.service.opts.Min:
-			accepted := a.service.jobManager.attempt(job{jobType: jtCreate})
-			if accepted {
-				a.log.Info().
-					Int("want", a.service.opts.Min).
-					Int("have", len(vms)).
-					Msg("increase vms for min")
-			}
-			return nil
-		case len(vms) > a.service.opts.Max:
-			accepted := a.service.jobManager.attempt(job{jobType: jtDestroy})
-			if accepted {
-				a.log.Info().
-					Int("want", a.service.opts.Max).
-					Int("have", len(vms)).
-					Msg("decrease vms for max")
-			}
-			return nil
-		}
-		for _, vm := range vms {
-			avg := movingAverageLoad(vm.stats)
-			switch {
-			case avg > scaleUpAverageLoad:
-				accepted := a.service.jobManager.attempt(job{jobType: jtCreate})
-				if accepted {
-					a.log.Info().
-						Float64("want", scaleUpAverageLoad).
-						Float64("have", avg).
-						Msg("increase vms for load")
-				}
-			case avg < scaleUpAverageLoad:
-				accepted := a.service.jobManager.attempt(job{jobType: jtDestroy})
-				if accepted {
-					a.log.Info().
-						Float64("want", scaleDownAverageLoad).
-						Float64("have", avg).
-						Msg("decrease vms for load")
-				}
-			}
-		}
-		return nil
-	}
-
-	for {
-		if err := autoscale(); err != nil {
-			return fmt.Errorf("autoscale: %w", err)
 		}
 	}
 }

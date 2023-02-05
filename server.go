@@ -7,6 +7,7 @@ import (
 	"math"
 	"strings"
 	"sync"
+	"time"
 
 	tf "github.com/egtann/yeoman/terrafirma"
 	"github.com/hashicorp/go-multierror"
@@ -20,8 +21,8 @@ type Server struct {
 	log        zerolog.Logger
 	store      Store
 	reporter   Reporter
-	services   []*Service
-	serviceSet map[string]*Service
+	services   []ServiceOpts
+	serviceSet map[string]ServiceOpts
 	mu         sync.RWMutex
 
 	// supervisor to manage providers.
@@ -50,7 +51,7 @@ func NewServer(opts ServerOpts) *Server {
 		store:      opts.Store,
 		reporter:   opts.Reporter,
 		supervisor: supervisor,
-		serviceSet: map[string]*Service{},
+		serviceSet: map[string]ServiceOpts{},
 	}
 }
 
@@ -73,6 +74,10 @@ func (s *Server) ServeBackground(
 		}
 		_ = s.supervisor.Add(p)
 	}
+	_ = s.supervisor.Add(&serviceScanner{
+		server: s,
+		log:    s.log.With().Str("task", "serviceScanner").Logger(),
+	})
 
 	errCh := s.supervisor.ServeBackground(ctx)
 	go func() {
@@ -83,6 +88,84 @@ func (s *Server) ServeBackground(
 		}
 	}()
 	return nil
+}
+
+type serviceScanner struct {
+	server *Server
+	log    zerolog.Logger
+}
+
+func (s *serviceScanner) Serve(ctx context.Context) error {
+	addService := func(opt ServiceOpts) {
+		s.server.mu.Lock()
+		defer s.server.mu.Unlock()
+
+		s.server.serviceSet[opt.Name] = opt
+		s.server.services = append(s.server.services, opt)
+	}
+	removeService := func(name string) error {
+		s.server.mu.Lock()
+		defer s.server.mu.Unlock()
+
+		delete(s.server.serviceSet, name)
+		services := make([]ServiceOpts, 0, len(s.server.serviceSet))
+		for _, service := range s.server.serviceSet {
+			services = append(services, service)
+		}
+		s.server.services = services
+		return nil
+	}
+	addRemoveServices := func(
+		oldOpts map[string]ServiceOpts,
+	) (map[string]ServiceOpts, error) {
+		if oldOpts == nil {
+			oldOpts = map[string]ServiceOpts{}
+		}
+
+		s.log.Debug().Msg("refreshing services")
+		ctx, cancel := context.WithTimeout(
+			context.Background(),
+			10*time.Second)
+		newOpts, err := s.server.store.GetServices(ctx)
+		cancel()
+		if err != nil {
+			return nil, fmt.Errorf("get services: %w", err)
+		}
+
+		for _, opt := range newOpts {
+			addService(opt)
+		}
+
+		// Find any marked for deletion.
+		for name := range oldOpts {
+			_, exist := newOpts[name]
+			if exist {
+				continue
+			}
+			err = removeService(name)
+			if err != nil {
+				return nil, fmt.Errorf("remove service: %w", err)
+			}
+		}
+		return newOpts, nil
+	}
+
+	opts, err := addRemoveServices(nil)
+	if err != nil {
+		return fmt.Errorf("add remove services: %w", err)
+	}
+	for {
+		opts, err = addRemoveServices(opts)
+		if err != nil {
+			return fmt.Errorf("add remove services: %w", err)
+		}
+		select {
+		case <-time.After(3 * time.Second):
+			continue
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }
 
 // TODO XXX
