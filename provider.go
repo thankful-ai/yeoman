@@ -20,7 +20,10 @@ type provider struct {
 	name  string
 	log   zerolog.Logger
 	terra *tf.Terrafirma
-	vms   concurrentSlice[*vmState]
+	vms   *concurrentSlice[vmState]
+
+	// serviceShutdownToken mapping service names to shutdown tokens.
+	serviceShutdownToken map[string]suture.ServiceToken
 
 	// supervisor to manage services.
 	supervisor *suture.Supervisor
@@ -31,7 +34,6 @@ func newProvider(
 	name tf.CloudProviderName,
 	registry ContainerRegistry,
 	store Store,
-	proxy Proxy,
 	reporter Reporter,
 	log zerolog.Logger,
 ) (*provider, error) {
@@ -54,7 +56,10 @@ func newProvider(
 
 	// Get all the services and create supervisors for each.
 	terra := tf.New(5 * time.Minute)
-	providerLog := log.With().Str("provider", string(name)).Logger()
+	providerLog := log.With().
+		Str("provider", providerName).
+		Str("zone", zone).
+		Logger()
 	switch providerName {
 	case "gcp":
 		tfGCP, err := gcp.New(providerLog, HTTPClient(), project,
@@ -66,33 +71,111 @@ func newProvider(
 	default:
 		return nil, fmt.Errorf("unknown provider: %s", providerName)
 	}
-	vms := concurrentSliceFrom([]*vmState{})
-
 	opts, err := store.GetServices(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("get services: %w", err)
+	}
+	p := &provider{
+		name:                 string(name),
+		log:                  log.With().Str("provider", string(name)).Logger(),
+		terra:                terra,
+		serviceShutdownToken: make(map[string]suture.ServiceToken, len(opts)),
+		supervisor:           supervisor,
+		vms:                  concurrentSliceFrom([]vmState{}),
 	}
 	for _, opt := range opts {
 		serviceLog := providerLog.With().
 			Str("service", opt.Name).
 			Logger()
 
-		service := newService(serviceLog, terra, name, store, proxy,
-			reporter, vms, opt)
-		_ = supervisor.Add(service)
+		service := newService(serviceLog, terra, name, store, reporter,
+			p.vms, opt)
+		token := supervisor.Add(service)
+		p.serviceShutdownToken[opt.Name] = token
 
 		serviceLog.Info().
 			Str("service", opt.Name).
 			Msg("tracking service")
 	}
+	_ = supervisor.Add(&reaper{
+		log:      log.With().Str("task", "reaper").Logger(),
+		provider: p,
+	})
 
-	return &provider{
-		name:       string(name),
-		log:        log.With().Str("provider", string(name)).Logger(),
-		terra:      terra,
-		supervisor: supervisor,
-		vms:        vms,
-	}, nil
+	return p, nil
+}
+
+type reaper struct {
+	log      zerolog.Logger
+	provider *provider
+}
+
+func (r *reaper) Serve(ctx context.Context) error {
+	const delay = time.Minute
+
+	reap := func() error {
+		r.log.Debug().Msg("checking for orphaned vms")
+
+		var toDelete []string
+		plan := map[tf.CloudProviderName]*tf.ProviderPlan{}
+		vms := copySlice(r.provider.vms)
+		for _, vm := range vms {
+			parts := strings.Split(vm.vm.Name, "-")
+
+			// Skip any VMs not managed by yeoman.
+			if parts[0] != "ym" {
+				continue
+			}
+
+			// Shutdown any services which were running at the
+			// time.
+			token, ok := r.provider.serviceShutdownToken[parts[1]]
+			if ok {
+				delete(r.provider.serviceShutdownToken,
+					parts[1])
+				err := r.provider.supervisor.Remove(token)
+				if err != nil {
+					return fmt.Errorf("remove %s: %w",
+						parts[1], err)
+				}
+			}
+
+			// And prepare to delete the boxes themselves.
+			cpName := tf.CloudProviderName(r.provider.name)
+			if plan[cpName] == nil {
+				plan[cpName] = &tf.ProviderPlan{}
+			}
+			plan[cpName].Destroy = append(plan[cpName].Destroy,
+				vm.vm)
+			toDelete = append(toDelete, vm.vm.Name)
+		}
+		if len(toDelete) == 0 {
+			select {
+			case <-time.After(delay):
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		r.log.Info().
+			Strs("names", toDelete).
+			Msg("reaping orphan vms")
+		if err := r.provider.terra.DestroyAll(plan); err != nil {
+			return fmt.Errorf("destroy all: %w", err)
+		}
+		r.log.Debug().Msg("reaped orphans")
+		select {
+		case <-time.After(delay):
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	for {
+		if err := reap(); err != nil {
+			return fmt.Errorf("reap: %w", err)
+		}
+	}
 }
 
 // compare is adapted from https://stackoverflow.com/a/23874751.
@@ -113,36 +196,45 @@ func compare[T comparable](X, Y []T) []T {
 }
 
 func (p *provider) Serve(ctx context.Context) error {
-	p.log.Debug().Msg("serving")
+	// We need to retrieve our current before starting services to prevent
+	// services from racing against us and trying to recreate duplicate
+	// servers before we can notify the service that the servers already
+	// exist.
+	vms, err := p.getVMs()
+	if err != nil {
+		return fmt.Errorf("get vms: %w", err)
+	}
+	setSlice(p.vms, vms)
 
 	// TODO(egtann) handle errors
 	p.supervisor.ServeBackground(ctx)
 
 	for {
+		vms, err := p.getVMs()
+		if err != nil {
+			return fmt.Errorf("get vms: %w", err)
+		}
+		setSlice(p.vms, vms)
+
 		select {
 		case <-time.After(6 * time.Second):
 			// Keep going
 		case <-ctx.Done():
 			return ctx.Err()
 		}
-		vms, err := p.getVMs()
-		if err != nil {
-			return fmt.Errorf("get vms: %w", err)
-		}
-		setSlice(p.vms, vms)
 	}
 	return nil
 }
 
-func (p *provider) getVMs() ([]*vmState, error) {
+func (p *provider) getVMs() ([]vmState, error) {
 	inventory, err := p.terra.Inventory()
 	if err != nil {
 		return nil, fmt.Errorf("inventory: %w", err)
 	}
 	tfVMs := inventory[tf.CloudProviderName(p.name)]
-	vms := make([]*vmState, 0, len(tfVMs))
+	vms := make([]vmState, 0, len(tfVMs))
 	for _, tfVM := range tfVMs {
-		vms = append(vms, &vmState{vm: tfVM})
+		vms = append(vms, vmState{vm: tfVM})
 	}
 	return vms, nil
 }
@@ -154,13 +246,13 @@ type concurrentSlice[T any] struct {
 	vals []T
 }
 
-func concurrentSliceFrom[T any](vals []T) concurrentSlice[T] {
-	return concurrentSlice[T]{
+func concurrentSliceFrom[T any](vals []T) *concurrentSlice[T] {
+	return &concurrentSlice[T]{
 		vals: vals,
 	}
 }
 
-func copySlice[T any](c concurrentSlice[T]) []T {
+func copySlice[T any](c *concurrentSlice[T]) []T {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -168,7 +260,7 @@ func copySlice[T any](c concurrentSlice[T]) []T {
 	return append(out, c.vals...)
 }
 
-func setSlice[T any](c concurrentSlice[T], vals []T) {
+func setSlice[T any](c *concurrentSlice[T], vals []T) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 

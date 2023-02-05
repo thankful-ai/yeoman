@@ -49,18 +49,97 @@ type Service struct {
 	terra         *tf.Terrafirma
 	cloudProvider tf.CloudProviderName
 	store         Store
-	proxy         Proxy
 	log           zerolog.Logger
 	reporter      Reporter
-	vms           concurrentSlice[*vmState]
+	vms           *concurrentSlice[vmState]
+
+	jobManager *jobManager
 
 	// supervisor to monitor the service using various checks to autoscale,
 	// recreate boxes, etc. as needed.
 	supervisor *suture.Supervisor
 }
 
-func (s *Service) getVMs() []*vmState {
-	var out []*vmState
+type jobManager struct {
+	log     zerolog.Logger
+	service *Service
+	ch      chan job
+}
+
+func newJobManager(log zerolog.Logger, s *Service) *jobManager {
+	return &jobManager{
+		log:     log.With().Str("task", "jobManager").Logger(),
+		service: s,
+		ch:      make(chan job),
+	}
+}
+
+func (jm *jobManager) Serve(ctx context.Context) error {
+	for {
+		var j job
+		var ok bool
+
+		select {
+		case j, ok = <-jm.ch:
+			if !ok {
+				panic("unexpected job channel close")
+			}
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+
+		vms := copySlice(jm.service.vms)
+		switch j.jobType {
+		case jtCreate:
+			err := jm.service.startupVMs(jm.service.opts, vms)
+			if err != nil {
+				return fmt.Errorf("startup vms: %w", err)
+			}
+		case jtDestroy:
+			err := jm.service.teardownVMs(vms, jm.service.opts.Max)
+			if err != nil {
+				return fmt.Errorf("teardown vms: %w", err)
+			}
+		}
+
+		// Wait between performing jobs, so services have a chance to
+		// shutdown, new servers can be booted, autoscaling can
+		// collection additional data, etc. before making another
+		// adjustment.
+		select {
+		case <-time.After(5 * time.Minute):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+// attempt to perform a job. If another is running, do nothing. This ensures
+// that creating/deleting VMs of the same service cannot happen at the same
+// time. It reports whether the job was accepted.
+func (jq *jobManager) attempt(j job) bool {
+	select {
+	case jq.ch <- j:
+		return true
+	default:
+		return false
+	}
+}
+
+type job struct {
+	jobType jobType
+	count   int
+}
+
+type jobType string
+
+const (
+	jtCreate  jobType = "create"
+	jtDestroy jobType = "destroy"
+)
+
+func (s *Service) getVMs() []vmState {
+	var out []vmState
 	vms := copySlice(s.vms)
 	for _, vm := range vms {
 		// Filter to show only VMs related to this service and version.
@@ -85,9 +164,8 @@ func newService(
 	terra *tf.Terrafirma,
 	cloudProvider tf.CloudProviderName,
 	store Store,
-	proxy Proxy,
 	reporter Reporter,
-	vms concurrentSlice[*vmState],
+	vms *concurrentSlice[vmState],
 	opts ServiceOpts,
 ) *Service {
 	supervisor := suture.New(fmt.Sprintf("srv_%s", opts.Name), suture.Spec{
@@ -100,26 +178,33 @@ func newService(
 	// - statChecker: Retrieve current health and load.
 	// - boundChecker: Confirm num of servers are within bounds.
 	// - autoscaler: Confirm num of services is appropriate for current load.
+	// - jobManager: Responsible for actually scaling servers up and down.
 
 	service := &Service{
 		log:           log,
 		terra:         terra,
 		cloudProvider: cloudProvider,
 		store:         store,
-		proxy:         proxy,
 		reporter:      reporter,
 		supervisor:    supervisor,
+		vms:           vms,
 		opts:          opts,
 	}
+	service.jobManager = newJobManager(log, service)
 
-	statCh := make(chan map[string]stats)
+	_ = supervisor.Add(service.jobManager)
 	_ = supervisor.Add(&statChecker{
-		log:     log,
-		statCh:  statCh,
+		log:     log.With().Str("task", "statChecker").Logger(),
 		service: service,
 	})
-	_ = supervisor.Add(&boundChecker{service: service})
-	_ = supervisor.Add(&autoscaler{service: service})
+	_ = supervisor.Add(&boundChecker{
+		log:     log.With().Str("task", "boundChecker").Logger(),
+		service: service,
+	})
+	_ = supervisor.Add(&autoscaler{
+		log:     log.With().Str("task", "autoscaler").Logger(),
+		service: service,
+	})
 
 	return service
 }
@@ -143,35 +228,35 @@ type stats struct {
 }
 
 type vmState struct {
-	stats stats
+	stats []stats
 	vm    *tf.VM
 }
 
-func averageVMLoad(vms []*vmState) float64 {
+func averageVMLoad(vms []vmState) float64 {
 	if len(vms) == 0 {
 		return 0
 	}
 	var f float64
 	for _, vm := range vms {
-		f += vm.stats.load
+		for _, stat := range vm.stats {
+			f += stat.load
+		}
 	}
 	return f / float64(len(vms))
 }
 
-func movingAverageLoad(loads []float64) float64 {
-	if len(loads) == 0 {
+func movingAverageLoad(stats []stats) float64 {
+	if len(stats) == 0 {
 		return 0
 	}
 	var f float64
-	for _, load := range loads {
-		f += load
+	for _, stat := range stats {
+		f += stat.load
 	}
-	return f / float64(len(loads))
+	return f / float64(len(stats))
 }
 
 func (s *Service) Serve(ctx context.Context) error {
-	s.log.Debug().Msg("serving")
-
 	// TODO(egtann) handle errors
 	s.supervisor.ServeBackground(ctx)
 
@@ -182,173 +267,6 @@ func (s *Service) Serve(ctx context.Context) error {
 		}
 	}
 	return nil
-}
-
-// start a monitor for each service which when started will pull down the
-// current state for it.
-func (s *Service) start() {
-	// This represents state of the service that's discovered and managed by
-	// this monitoring process.
-	var (
-		loadAverages []float64
-		extraDelay   time.Duration
-	)
-	go func() {
-		defer func() { recoverPanic(s.reporter) }()
-
-		for {
-			select {
-			case <-time.After(100*time.Millisecond + extraDelay):
-				// Wait a bit before refreshing state, or extra
-				// time if scaling up or down to allow time for
-				// requests to be routed to the new VMs and
-				// adjust each servers' loads.
-				extraDelay = 0
-			}
-
-			// Get current number of VMs
-			vms := s.getVMs()
-
-			// Get the current service definition. If it's been
-			// deleted, then we need to shutdown all VMs and the
-			// service.
-			ctx, cancel := context.WithTimeout(
-				context.Background(), 10*time.Second)
-			opts, err := s.store.GetService(ctx, s.opts.Name)
-			cancel()
-			switch {
-			case errors.Is(err, Missing):
-				// The reaper will automatically clean up the
-				// services next time it runs.
-				return
-			case err != nil:
-				s.reporter.Report(
-					fmt.Errorf("get service: %w", err))
-				continue
-			}
-
-			switch {
-			case len(vms) > opts.Max:
-				s.log.Info().
-					Int("want", opts.Max).
-					Int("have", len(vms)).
-					Msg("too many vms, tearing down")
-				var err error
-				vms, err = s.teardownVMs(vms, opts.Max)
-				if err != nil {
-					s.reporter.Report(
-						fmt.Errorf("teardown vms above max: %w", err))
-				}
-				continue
-			case len(vms) < opts.Min:
-				s.log.Info().
-					Int("want", opts.Min).
-					Int("have", len(vms)).
-					Msg("too few vms, starting up")
-				var err error
-				vms, err = s.startupVMs(opts, vms)
-				if err != nil {
-					s.reporter.Report(
-						fmt.Errorf("startup vms below min: %w", err))
-				}
-				continue
-			}
-
-			// We don't check health or autoscale the reverse proxy.
-			//
-			// TODO(egtann) make this apparent in some way to users
-			// or revisit :)
-			if opts.Name == "proxy" {
-				continue
-			}
-
-			for _, vm := range vms {
-				var err error
-				vm.stats, err = getStats(s.log, vm.vm,
-					3*time.Second)
-				if err != nil {
-					s.reporter.Report(fmt.Errorf(
-						"get stats: %w", err))
-					vm.stats.healthy = false
-					vm.stats.load = 0
-					continue
-				}
-			}
-
-			// Use the moving average across 5 time periods to
-			// determine the true load, rather than a snapshot
-			// moment in time. We want to scale up under sustained
-			// load, not a flash in the pan, since it'll take
-			// longer to boot a new VM than just processing the web
-			// request in most circumstances.
-			avg := averageVMLoad(vms)
-			loadAverages = append(loadAverages, avg)
-			if len(loadAverages) < 5 {
-				// We don't have enough data yet.
-				continue
-			} else {
-				loadAverages = loadAverages[1:]
-			}
-			movingAvg := movingAverageLoad(loadAverages)
-			switch {
-			case movingAvg > scaleUpAverageLoad:
-				if opts.Max >= len(vms) {
-					s.log.Debug().Msg("high load, skipping autoscale at maximum")
-					continue
-				}
-				s.log.Info().
-					Float64("scaleUpAverageLoad", scaleUpAverageLoad).
-					Float64("movingAverage", movingAvg).
-					Msg("autoscale starting up vms")
-
-				// We scale up more servers synchronously.
-				// While scaling is taking place, we can't
-				// continue, since we'll scale up to the max
-				// number of servers right away (probably
-				// needlessly) given the delay to boot a server
-				// vs the amount of time it takes to process
-				// requests. It might be 10s before we see a
-				// drop in load even after the VM is booted,
-				// since it'll take some time for existing
-				// requests to finish and the reverse proxy to
-				// send enough traffic to the new boxes.
-				var err error
-				vms, err = s.startupVMs(opts, vms)
-				if err != nil {
-					s.reporter.Report(
-						fmt.Errorf("startup vms autoscale: %w", err))
-				}
-
-				// TODO(egtann) we probably want to expand this
-				// to allow more traffic and requests to hit
-				// the box before re-measuring load.
-				extraDelay = 3 * time.Second
-				continue
-			case movingAvg < scaleDownAverageLoad:
-				if len(vms) == 0 {
-					continue
-				}
-				if opts.Min <= len(vms) {
-					s.log.Debug().Msg("low load, skipping autoscale at minimum")
-					continue
-				}
-
-				s.log.Info().
-					Float64("scaleDownAverageLoad", scaleDownAverageLoad).
-					Float64("movingAverage", movingAvg).
-					Msg("autoscale tearing down vms")
-
-				var err error
-				vms, err = s.autoscaleTeardownVMs(vms)
-				if err != nil {
-					s.reporter.Report(
-						fmt.Errorf("autoscale teardown vms: %w", err))
-				}
-				extraDelay = 30 * time.Second
-				continue
-			}
-		}
-	}()
 }
 
 func getStats(
@@ -470,24 +388,6 @@ func pollUntilHealthy(
 	}
 }
 
-func (s *Service) autoscaleTeardownVMs(vms []*vmState) ([]*vmState, error) {
-	// Always prioritize removing unhealthy VMs and those with the lowest
-	// load before any others.
-	sort.Sort(vmStateByHealthAndLoad(vms))
-
-	// Delete the first VM in the list. Autoscaling backs down the count of
-	// VMs slowly, one at a time.
-	plan := map[tf.CloudProviderName]*tf.ProviderPlan{
-		s.cloudProvider: &tf.ProviderPlan{
-			Destroy: []*tf.VM{vms[0].vm},
-		},
-	}
-	if err := s.terra.DestroyAll(plan); err != nil {
-		return vms, fmt.Errorf("destroy all: %w", err)
-	}
-	return vms[1:], nil
-}
-
 func (s *Service) teardownAllVMs() error {
 	vms := s.getVMs()
 	toDelete := make([]*tf.VM, 0, len(vms))
@@ -505,18 +405,17 @@ func (s *Service) teardownAllVMs() error {
 	return nil
 }
 
-func (s *Service) teardownVMs(vms []*vmState, max int) ([]*vmState, error) {
+func (s *Service) teardownVMs(vms []vmState, count int) error {
 	if len(vms) == 0 {
-		return vms, nil
+		return nil
 	}
 
 	// Always prioritize removing unhealthy VMs and those with the lowest
 	// load before any others.
 	sort.Sort(vmStateByHealthAndLoad(vms))
 
-	deleteCount := len(vms) - max
-	toDelete := make([]*tf.VM, 0, deleteCount)
-	for i := 0; i < deleteCount; i++ {
+	toDelete := make([]*tf.VM, 0, count)
+	for i := 0; i < count; i++ {
 		toDelete = append(toDelete, vms[i].vm)
 	}
 	plan := map[tf.CloudProviderName]*tf.ProviderPlan{
@@ -525,15 +424,15 @@ func (s *Service) teardownVMs(vms []*vmState, max int) ([]*vmState, error) {
 		},
 	}
 	if err := s.terra.DestroyAll(plan); err != nil {
-		return vms, fmt.Errorf("destroy all: %w", err)
+		return fmt.Errorf("destroy all: %w", err)
 	}
-	return vms[:max], nil
+	return nil
 }
 
 func (s *Service) startupVMs(
 	opts ServiceOpts,
-	vms []*vmState,
-) ([]*vmState, error) {
+	vms []vmState,
+) error {
 	const boxName = "@container"
 	boxes := map[tf.CloudProviderName]map[tf.BoxName]*tf.Box{
 		s.cloudProvider: map[tf.BoxName]*tf.Box{
@@ -556,7 +455,7 @@ func (s *Service) startupVMs(
 	for i := 0; i < toStart; i++ {
 		id, err := firstID(vms)
 		if err != nil {
-			return nil, fmt.Errorf("first id: %w", err)
+			return fmt.Errorf("first id: %w", err)
 		}
 		plan[s.cloudProvider].Create = append(
 			plan[s.cloudProvider].Create, &tf.VMTemplate{
@@ -571,15 +470,15 @@ func (s *Service) startupVMs(
 	}
 
 	if err := s.terra.CreateAll(boxes, plan); err != nil {
-		return nil, fmt.Errorf("create all: %w", err)
+		return fmt.Errorf("create all: %w", err)
 	}
 
 	// Get all of our new VMs for this service.
 	inventory, err := s.terra.Inventory()
 	if err != nil {
-		return nil, fmt.Errorf("inventory: %w", err)
+		return fmt.Errorf("inventory: %w", err)
 	}
-	vms = []*vmState{}
+	vms = []vmState{}
 	for cloudProvider, providerVMs := range inventory {
 		if cloudProvider != s.cloudProvider {
 			continue
@@ -598,10 +497,10 @@ func (s *Service) startupVMs(
 				parts[1] != opts.Name {
 				continue
 			}
-			vms = append(vms, &vmState{vm: vm})
+			vms = append(vms, vmState{vm: vm})
 			ip := internalIP(vm)
 			if ip == "" {
-				return nil, fmt.Errorf(
+				return fmt.Errorf(
 					"missing internal ip for vm: %s",
 					vm.Name)
 			}
@@ -624,24 +523,14 @@ func (s *Service) startupVMs(
 		select {
 		case err := <-errs:
 			if err != nil {
-				return nil, fmt.Errorf("get stats context: %w", err)
+				return fmt.Errorf("get stats context: %w", err)
 			}
 		}
 	}
 
 	// All VMs reported that they're healthy.
 	s.log.Info().Msg("services on new vms reported healthy")
-
-	// Update the proxy of the new IPs.
-	if opts.Name != "proxy" {
-		ips := make([]string, 0, len(vms))
-		for _, vm := range vms {
-			ips = append(ips, internalIP(vm.vm))
-		}
-		s.proxy.UpsertService(opts.Name, ips)
-	}
-
-	return vms, nil
+	return nil
 }
 
 type healthCheck struct {
@@ -658,18 +547,23 @@ func (a ServiceOptsByName) Less(i, j int) bool {
 }
 
 // vmStateByHealthAndLoad sorts unhealthy and low-load VMs first.
-type vmStateByHealthAndLoad []*vmState
+type vmStateByHealthAndLoad []vmState
 
 func (a vmStateByHealthAndLoad) Len() int      { return len(a) }
 func (a vmStateByHealthAndLoad) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
 func (a vmStateByHealthAndLoad) Less(i, j int) bool {
-	if !a[i].stats.healthy {
-		return true
-	}
-	if !a[j].stats.healthy {
+	if len(a[i].stats) == 0 || len(a[j].stats) == 0 {
 		return false
 	}
-	return a[i].stats.load < a[j].stats.load
+	aiStat := a[i].stats[len(a[i].stats)-1]
+	ajStat := a[j].stats[len(a[j].stats)-1]
+	if !aiStat.healthy {
+		return true
+	}
+	if !ajStat.healthy {
+		return false
+	}
+	return aiStat.load < ajStat.load
 }
 
 // TODO(egtann) when yeoman boots (and every min) it should pull down the list
@@ -699,7 +593,7 @@ func (s *Service) tags() []string {
 // firstID generates the lowest possible unique identifier for a VM in the
 // service, useful for generating simple, incrementing names. It fills in holes,
 // such that VMs with IDs of 1, 3, 4 will have a firstID of 2.
-func firstID(vms []*vmState) (int, error) {
+func firstID(vms []vmState) (int, error) {
 	if len(vms) == 0 {
 		return 1, nil
 	}
@@ -780,26 +674,15 @@ func recoverPanic(reporter Reporter) {
 type statChecker struct {
 	log     zerolog.Logger
 	service *Service
-	stats   map[string][]stats
-	statCh  chan<- map[string]stats
 }
 
 func (c *statChecker) Serve(ctx context.Context) error {
-	c.log.Debug().Msg("serving statchecker")
-
 	for {
-		select {
-		case <-time.After(6 * time.Second):
-			// Keep going
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-
 		// Get current VMs in case they were created manually or
 		// changed in some way.
 		vms := c.service.getVMs()
-		allStats := make(map[string]stats, len(vms))
-		for _, vm := range vms {
+		for i := range vms {
+			vm := vms[i]
 			stat, err := getStats(c.log, vm.vm, 3*time.Second)
 			if err != nil {
 				c.log.Error().
@@ -807,36 +690,22 @@ func (c *statChecker) Serve(ctx context.Context) error {
 					Msg("failed to get stats")
 				continue
 			}
-			c.stats[vm.vm.Name] = append(c.stats[vm.vm.Name], stat)
+			vm.stats = append(vm.stats, stat)
+
 			c.log.Info().
-				Int("count", len(c.stats[vm.vm.Name])).
+				Int("count", len(vm.stats)).
 				Msg("got stats")
-			switch len(c.stats[vm.vm.Name]) {
+			switch len(vm.stats) {
 			case 1, 2, 3, 4:
 				// We don't have enough data. Continue to
 				// collect stats internally but there's no need
 				// to notify the
 				continue
 			case 6:
-				c.stats[vm.vm.Name] = c.stats[vm.vm.Name][1:]
+				vm.stats = vm.stats[1:]
 				fallthrough
 			case 5:
-				// Use the moving average across 5 time periods
-				// to determine the true load, rather than a
-				// snapshot moment in time. We want to scale up
-				// under sustained load, not a flash in the
-				// pan, since it'll take longer to boot a new
-				// VM than just processing the web request in
-				// most circumstances.
-				loads := make([]float64, 0,
-					len(c.stats[vm.vm.Name]))
-				for _, stat := range c.stats[vm.vm.Name] {
-					loads = append(loads, stat.load)
-				}
-				allStats[vm.vm.Name] = stats{
-					healthy: stat.healthy,
-					load:    movingAverageLoad(loads),
-				}
+				setSlice(c.service.vms, vms)
 			default:
 				// Should be impossible since we always
 				// truncate 6 down to 5.
@@ -844,135 +713,134 @@ func (c *statChecker) Serve(ctx context.Context) error {
 			}
 		}
 
-		// If we have enough data on a service's health to communicate,
-		// send it now.
-		if len(allStats) > 0 {
-			c.statCh <- allStats
+		select {
+		case <-time.After(6 * time.Second):
+			// Keep going
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
 	return nil
 }
 
 type boundChecker struct {
+	log     zerolog.Logger
 	service *Service
 }
 
 func (b *boundChecker) Serve(ctx context.Context) error {
-	s := b.service
-	opts := s.opts
+	// Give our jobManager a second to boot.
+	time.Sleep(time.Second)
 
-	s.log.Debug().Msg("serving boundchecker")
+	opts := b.service.opts
 
 	for {
+		vms := b.service.getVMs()
+		switch {
+		case len(vms) > opts.Max:
+			accepted := b.service.jobManager.attempt(job{jobType: jtDestroy})
+			if accepted {
+				b.log.Info().
+					Int("want", opts.Max).
+					Int("have", len(vms)).
+					Msg("too many vms, tearing down")
+			} else {
+				b.log.Info().
+					Int("want", opts.Max).
+					Int("have", len(vms)).
+					Msg("job rejected")
+			}
+		case len(vms) < opts.Min:
+			accepted := b.service.jobManager.attempt(job{jobType: jtCreate})
+			if accepted {
+				b.log.Info().
+					Int("want", opts.Min).
+					Int("have", len(vms)).
+					Msg("too few vms, starting up")
+			} else {
+				b.log.Info().
+					Int("want", opts.Max).
+					Int("have", len(vms)).
+					Msg("job rejected")
+			}
+		}
+
 		select {
 		case <-time.After(time.Minute):
 			// Keep going
 		case <-ctx.Done():
 			return ctx.Err()
 		}
-
-		vms := s.getVMs()
-		switch {
-		case len(vms) > opts.Max:
-			s.log.Info().
-				Int("want", opts.Max).
-				Int("have", len(vms)).
-				Msg("too many vms, tearing down")
-			var err error
-			vms, err = s.teardownVMs(vms, opts.Max)
-			if err != nil {
-				s.reporter.Report(
-					fmt.Errorf("teardown vms above max: %w", err))
-			}
-			continue
-		case len(vms) < opts.Min:
-			s.log.Info().
-				Int("want", opts.Min).
-				Int("have", len(vms)).
-				Msg("too few vms, starting up")
-			var err error
-			vms, err = s.startupVMs(opts, vms)
-			if err != nil {
-				s.reporter.Report(
-					fmt.Errorf("startup vms below min: %w", err))
-			}
-			continue
-		}
 	}
 }
 
-// TODO(egtann) all the teardown and startup commands should be issued through
-// a channel, so they're ordered and never conflict, e.g. starting up and
-// shutting down a service should never happen at the same time.
 type autoscaler struct {
+	log     zerolog.Logger
 	service *Service
-	statCh  <-chan map[string]stats
 }
 
 func (a *autoscaler) Serve(ctx context.Context) error {
-	s := a.service
-	opts := s.opts
-	s.log.Debug().Msg("serving autoscaler")
+	// Give our jobManager a second to boot.
+	time.Sleep(time.Second)
 
-	for {
-		select {
-		case allStats := <-a.statCh:
-			vms := s.getVMs()
-			for _, stat := range allStats {
-				switch {
-				case stat.load > scaleUpAverageLoad:
-					if opts.Max >= len(vms) {
-						s.log.Debug().Msg("high load, skipping autoscale at maximum")
-						continue
-					}
-					s.log.Info().
-						Float64("scaleUpAverageLoad", scaleUpAverageLoad).
-						Float64("movingAverage", stat.load).
-						Msg("autoscale starting up vms")
+	autoscale := func() (err error) {
+		defer func() {
+			select {
+			case <-time.After(6 * time.Second):
+			case <-ctx.Done():
+				err = ctx.Err()
+				return
+			}
+		}()
 
-					// We scale up more servers synchronously.
-					// While scaling is taking place, we can't
-					// continue, since we'll scale up to the max
-					// number of servers right away (probably
-					// needlessly) given the delay to boot a server
-					// vs the amount of time it takes to process
-					// requests. It might be 10s before we see a
-					// drop in load even after the VM is booted,
-					// since it'll take some time for existing
-					// requests to finish and the reverse proxy to
-					// send enough traffic to the new boxes.
-					var err error
-					vms, err = s.startupVMs(opts, vms)
-					if err != nil {
-						s.reporter.Report(
-							fmt.Errorf("startup vms autoscale: %w", err))
-					}
-					continue
-				case stat.load < scaleDownAverageLoad:
-					if len(vms) == 0 {
-						continue
-					}
-					if opts.Min <= len(vms) {
-						s.log.Debug().Msg("low load, skipping autoscale at minimum")
-						continue
-					}
-
-					s.log.Info().
-						Float64("scaleDownAverageLoad", scaleDownAverageLoad).
-						Float64("movingAverage", stat.load).
-						Msg("autoscale tearing down vms")
-
-					var err error
-					vms, err = s.autoscaleTeardownVMs(vms)
-					if err != nil {
-						s.reporter.Report(
-							fmt.Errorf("autoscale teardown vms: %w", err))
-					}
-					continue
+		vms := a.service.getVMs()
+		switch {
+		case len(vms) < a.service.opts.Min:
+			accepted := a.service.jobManager.attempt(job{jobType: jtCreate})
+			if accepted {
+				a.log.Info().
+					Int("want", a.service.opts.Min).
+					Int("have", len(vms)).
+					Msg("increase vms for min")
+			}
+			return nil
+		case len(vms) > a.service.opts.Max:
+			accepted := a.service.jobManager.attempt(job{jobType: jtDestroy})
+			if accepted {
+				a.log.Info().
+					Int("want", a.service.opts.Max).
+					Int("have", len(vms)).
+					Msg("decrease vms for max")
+			}
+			return nil
+		}
+		for _, vm := range vms {
+			avg := movingAverageLoad(vm.stats)
+			switch {
+			case avg > scaleUpAverageLoad:
+				accepted := a.service.jobManager.attempt(job{jobType: jtCreate})
+				if accepted {
+					a.log.Info().
+						Float64("want", scaleUpAverageLoad).
+						Float64("have", avg).
+						Msg("increase vms for load")
+				}
+			case avg < scaleUpAverageLoad:
+				accepted := a.service.jobManager.attempt(job{jobType: jtDestroy})
+				if accepted {
+					a.log.Info().
+						Float64("want", scaleDownAverageLoad).
+						Float64("have", avg).
+						Msg("decrease vms for load")
 				}
 			}
-		case <-ctx.Done():
-			return ctx.Err()
+		}
+		return nil
+	}
+
+	for {
+		if err := autoscale(); err != nil {
+			return fmt.Errorf("autoscale: %w", err)
 		}
 	}
 }

@@ -610,9 +610,9 @@ func (g *GCP) do(
 // getProjectNumber converts from a project ID (e.g. "my-project-123") to a
 // number which Google uses to identify its service account.
 func (g *GCP) getProjectNumber(ctx context.Context) (string, error) {
-	const path = "https://cloudresourcemanager.googleapis.com/v1/projects/%s"
-	byt, err := g.do(ctx, http.MethodGet, fmt.Sprintf(path, g.project),
-		nil)
+	path := "https://cloudresourcemanager.googleapis.com/v1/projects/%s"
+	path = fmt.Sprintf(path, g.project)
+	byt, err := g.do(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return "", fmt.Errorf("do %s: %w", path, err)
 	}

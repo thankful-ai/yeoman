@@ -19,7 +19,6 @@ import (
 type Server struct {
 	log        zerolog.Logger
 	store      Store
-	proxy      Proxy
 	reporter   Reporter
 	services   []*Service
 	serviceSet map[string]*Service
@@ -32,7 +31,6 @@ type Server struct {
 type ServerOpts struct {
 	Log      zerolog.Logger
 	Store    Store
-	Proxy    Proxy
 	Reporter Reporter
 }
 
@@ -50,7 +48,6 @@ func NewServer(opts ServerOpts) *Server {
 	return &Server{
 		log:        opts.Log,
 		store:      opts.Store,
-		proxy:      opts.Proxy,
 		reporter:   opts.Reporter,
 		supervisor: supervisor,
 		serviceSet: map[string]*Service{},
@@ -70,8 +67,7 @@ func (s *Server) ServeBackground(
 
 	for cp, cr := range providerRegistries {
 		s.log.Info().Str("provider", string(cp)).Msg("using provider")
-		p, err := newProvider(ctx, cp, cr, s.store, s.proxy,
-			s.reporter, s.log)
+		p, err := newProvider(ctx, cp, cr, s.store, s.reporter, s.log)
 		if err != nil {
 			return fmt.Errorf("new provider: %w", err)
 		}
@@ -192,51 +188,7 @@ func todoUseSomewhere(
 			s.services = services
 			return nil
 		}
-		reapOrphans := func() {
-			s.log.Debug().Msg("checking for orphaned vms")
-			inventory, err := terra.Inventory()
-			if err != nil {
-				err = fmt.Errorf("terrafirma inventory: %w", err)
-				s.reporter.Report(err)
-				return
-			}
-			var toDelete []string
-			plan := map[tf.CloudProviderName]*tf.ProviderPlan{}
-			for cpName, vms := range inventory {
-				for _, vm := range vms {
-					parts := strings.Split(vm.Name, "-")
 
-					// Skip any VMs not managed by yeoman.
-					if parts[0] != "ym" {
-						continue
-					}
-					s.mu.RLock()
-					_, exist := s.serviceSet[parts[1]]
-					s.mu.RUnlock()
-					if exist {
-						continue
-					}
-					if plan[cpName] == nil {
-						plan[cpName] = &tf.ProviderPlan{}
-					}
-					plan[cpName].Destroy = append(
-						plan[cpName].Destroy, vm)
-					toDelete = append(toDelete, vm.Name)
-				}
-			}
-			if len(toDelete) == 0 {
-				return
-			}
-			s.log.Info().
-				Strs("names", toDelete).
-				Msg("reaping orphan vms")
-			if err := terra.DestroyAll(plan); err != nil {
-				err = fmt.Errorf("destroy all: %w", err)
-				s.reporter.Report(err)
-				return
-			}
-			s.log.Debug().Msg("reaped orphans")
-		}
 		addRemoveServices := func(
 			oldOpts map[string]ServiceOpts,
 		) (map[string]ServiceOpts, error) {

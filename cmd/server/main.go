@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	nethttp "net/http"
 	"os"
@@ -29,6 +30,7 @@ func run() error {
 	// TODO(egtann) make this a flag
 	store := google.NewBucket("yeoman-bucket")
 	reporter := logReporter{log: log}
+
 	server := yeoman.NewServer(yeoman.ServerOpts{
 		Reporter: reporter,
 		Log:      log,
@@ -47,6 +49,10 @@ func run() error {
 	}
 
 	if err := server.ServeBackground(ctx, providerRegistries); err != nil {
+		// Treat our deliberate shutdown as a success
+		if errors.Is(err, context.Canceled) {
+			return nil
+		}
 		return fmt.Errorf("server start: %w", err)
 	}
 
