@@ -17,10 +17,12 @@ import (
 // provider manages a single provider, such as GCP, and all the services that
 // run within it.
 type provider struct {
-	name  string
-	log   zerolog.Logger
-	terra *tf.Terrafirma
-	vms   *concurrentSlice[vmState]
+	name     string
+	log      zerolog.Logger
+	terra    *tf.Terrafirma
+	vms      *concurrentSlice[vmState]
+	store    Store
+	reporter Reporter
 
 	// serviceShutdownToken mapping service names to shutdown tokens.
 	serviceShutdownToken map[string]suture.ServiceToken
@@ -79,6 +81,8 @@ func newProvider(
 		name:                 string(name),
 		log:                  log.With().Str("provider", string(name)).Logger(),
 		terra:                terra,
+		store:                store,
+		reporter:             reporter,
 		serviceShutdownToken: make(map[string]suture.ServiceToken, len(opts)),
 		supervisor:           supervisor,
 		vms:                  concurrentSliceFrom([]vmState{}),
@@ -114,8 +118,29 @@ func (r *reaper) Serve(ctx context.Context) error {
 	const delay = time.Minute
 
 	reap := func() error {
-		r.log.Debug().Msg("checking for orphaned vms")
+		r.log.Debug().Msg("adding services")
+		opts, err := r.provider.store.GetServices(ctx)
+		if err != nil {
+			return fmt.Errorf("get services: %w", err)
+		}
+		for _, opt := range opts {
+			serviceLog := r.provider.log.With().
+				Str("service", opt.Name).
+				Logger()
 
+			service := newService(serviceLog, r.provider.terra,
+				tf.CloudProviderName(r.provider.name),
+				r.provider.store, r.provider.reporter,
+				r.provider.vms, opt)
+			token := r.provider.supervisor.Add(service)
+			r.provider.serviceShutdownToken[opt.Name] = token
+
+			serviceLog.Info().
+				Str("service", opt.Name).
+				Msg("tracking service")
+		}
+
+		r.log.Debug().Msg("checking for orphaned vms")
 		var toDelete []string
 		plan := map[tf.CloudProviderName]*tf.ProviderPlan{}
 		vms := copySlice(r.provider.vms)

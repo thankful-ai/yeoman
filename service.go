@@ -663,6 +663,7 @@ func (b *boundChecker) Serve(ctx context.Context) error {
 
 	for {
 		vms := b.service.getVMs()
+		b.log.Debug().Int("count", len(vms)).Msg("got vms")
 		switch {
 		case len(vms) > opts.Count:
 			accepted := b.service.jobManager.attempt(job{jobType: jtDestroy})
