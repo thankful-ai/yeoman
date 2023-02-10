@@ -20,7 +20,6 @@ import (
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/client"
 	"github.com/egtann/yeoman"
-	"github.com/hashicorp/go-multierror"
 	"github.com/jhoonb/archivex"
 	"golang.org/x/oauth2/google"
 )
@@ -150,7 +149,7 @@ func deployService(args []string, opts serviceOpts) error {
 		if err := responseOK(rsp); err != nil {
 			byt, _ := io.ReadAll(rsp.Body)
 			_ = rsp.Body.Close()
-			errs = multierror.Append(errs,
+			errs = errors.Join(errs,
 				fmt.Errorf("%s: %w: %s", ip, err, string(byt)))
 			continue
 		}
@@ -196,7 +195,7 @@ func destroyService(args []string, opts serviceOpts) error {
 		if err := responseOK(rsp); err != nil {
 			byt, _ := io.ReadAll(rsp.Body)
 			_ = rsp.Body.Close()
-			errs = multierror.Append(errs,
+			errs = errors.Join(errs,
 				fmt.Errorf("%s: %w: %s", ip, err, string(byt)))
 			continue
 		}
@@ -232,7 +231,7 @@ func listServices() error {
 
 		if err := responseOK(rsp); err != nil {
 			byt, _ := io.ReadAll(rsp.Body)
-			errs = multierror.Append(errs,
+			errs = errors.Join(errs,
 				fmt.Errorf("%s: %w: %s", ip, err, string(byt)))
 			continue
 		}
@@ -241,7 +240,7 @@ func listServices() error {
 		}{}
 		err = json.NewDecoder(rsp.Body).Decode(&rspData)
 		if err != nil {
-			errs = multierror.Append(errs,
+			errs = errors.Join(errs,
 				fmt.Errorf("%s: decode: %w", ip, err))
 			continue
 		}

@@ -10,7 +10,6 @@ import (
 	"time"
 
 	tf "github.com/egtann/yeoman/terrafirma"
-	"github.com/hashicorp/go-multierror"
 	"github.com/rs/zerolog"
 	"github.com/thejerf/suture/v4"
 )
@@ -334,19 +333,19 @@ func todoUseSomewhere(
 					close(jobs)
 				}(cpName)
 
-				var result *multierror.Error
+				var errs error
 				for batch := range jobs {
 					s.log.Info().
 						Strs("names", batch).
 						Msg("restarting batch")
 					err = terra.Restart(cpName, batch)
 					if err != nil {
-						result = multierror.Append(result, err)
+						errs = errors.Join(errs, err)
 					}
 				}
-				if err = result.ErrorOrNil(); err != nil {
-					err = fmt.Errorf("failed to restart services: %w", err)
-					s.reporter.Report(err)
+				if errs != nil {
+					errs = fmt.Errorf("failed to restart services: %w", errs)
+					s.reporter.Report(errs)
 					return
 				}
 			}
@@ -456,19 +455,20 @@ func (s *Server) restartServiceVMs(terra *tf.Terrafirma, serviceName string) {
 			close(jobs)
 		}(cpName)
 
-		var result *multierror.Error
+		var errs error
 		for batch := range jobs {
 			s.log.Info().
 				Strs("names", batch).
 				Msg("restarting batch")
 			err = terra.Restart(cpName, batch)
 			if err != nil {
-				result = multierror.Append(result, err)
+				errs = errors.Join(errs, err)
 			}
 		}
-		if err = result.ErrorOrNil(); err != nil {
-			err = fmt.Errorf("failed to restart services: %w", err)
-			s.reporter.Report(err)
+		if errs != nil {
+			errs = fmt.Errorf("failed to restart services: %w",
+				errs)
+			s.reporter.Report(errs)
 			return
 		}
 	}
