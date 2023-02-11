@@ -1,0 +1,4 @@
+{
+	"type": "python3",
+	"cmd": ["python3", "/app/server.py"]
+}

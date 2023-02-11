@@ -26,7 +26,10 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
 )
 
-const configPath = "yeoman.json"
+const (
+	configPath = "yeoman.json"
+	workDir    = "/app"
+)
 
 func main() {
 	if err := run(); err != nil {
@@ -276,6 +279,18 @@ type config struct {
 	ContainerRegistry string           `json:"containerRegistry"`
 }
 
+type appConfig struct {
+	Type appType  `json:"type"`
+	Cmd  []string `json:"cmd"`
+}
+
+type appType string
+
+const (
+	python3 appType = "python3"
+	golang  appType = "go"
+)
+
 func parseConfig() (config, error) {
 	var conf config
 	byt, err := os.ReadFile(configPath)
@@ -320,10 +335,29 @@ func responseOK(rsp *http.Response) error {
 }
 
 func buildImage(containerRegistry, serviceName string) error {
-	// TODO(egtann) based on the type of app, use a different image and
-	// entrypoint.
-	const base = "gcr.io/distroless/static:latest"
-	fmt.Println("pulling", base)
+	appConfigPath := filepath.Join(serviceName, configPath)
+
+	var conf appConfig
+	byt, err := os.ReadFile(appConfigPath)
+	if err != nil {
+		return fmt.Errorf("read file: %w", err)
+	}
+	if err := json.Unmarshal(byt, &conf); err != nil {
+		return fmt.Errorf("unmarshal: %w", err)
+	}
+
+	// TODO(egtann) Add more app types:
+	// https://github.com/GoogleContainerTools/distroless#docker.
+	var base string
+	switch conf.Type {
+	case python3:
+		base = "gcr.io/distroless/python3-debian11:latest"
+	case golang:
+		base = "gcr.io/distroless/static:latest"
+	default:
+		return fmt.Errorf("unsupported app type: %s", conf.Type)
+	}
+	fmt.Println("building on", base)
 	img, err := crane.Pull(base)
 	if err != nil {
 		return fmt.Errorf("pull: %w", err)
@@ -338,7 +372,7 @@ func buildImage(containerRegistry, serviceName string) error {
 		return fmt.Errorf("append layers: %w", err)
 	}
 	img, err = mutate.Config(img, v1.Config{
-		Entrypoint: []string{serviceName},
+		Cmd: conf.Cmd,
 	})
 	if err != nil {
 		return fmt.Errorf("mutate config: %w", err)
@@ -373,8 +407,14 @@ func layerFromDir(root string) (v1.Layer, error) {
 			return fmt.Errorf("failed to calculate relative path: %w", err)
 		}
 
+		// Skip the app configuration file, since that's only useful
+		// locally.
+		if rel == configPath {
+			return nil
+		}
+
 		hdr := &tar.Header{
-			Name: path.Join("/", filepath.ToSlash(rel)),
+			Name: path.Join(workDir[1:], filepath.ToSlash(rel)),
 			Mode: int64(info.Mode()),
 		}
 		if !info.IsDir() {
@@ -387,10 +427,10 @@ func layerFromDir(root string) (v1.Layer, error) {
 		} else {
 			return fmt.Errorf("not implemented archiving file type %s (%s)", info.Mode(), rel)
 		}
-
 		if err := tw.WriteHeader(hdr); err != nil {
 			return fmt.Errorf("failed to write tar header: %w", err)
 		}
+
 		if !info.IsDir() {
 			f, err := os.Open(fp)
 			if err != nil {

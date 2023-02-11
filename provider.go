@@ -87,20 +87,6 @@ func newProvider(
 		supervisor:           supervisor,
 		vms:                  concurrentSliceFrom([]vmState{}),
 	}
-	for _, opt := range opts {
-		serviceLog := providerLog.With().
-			Str("service", opt.Name).
-			Logger()
-
-		service := newService(serviceLog, terra, name, store, reporter,
-			p.vms, opt)
-		token := supervisor.Add(service)
-		p.serviceShutdownToken[opt.Name] = token
-
-		serviceLog.Info().
-			Str("service", opt.Name).
-			Msg("tracking service")
-	}
 	_ = supervisor.Add(&reaper{
 		log:      log.With().Str("task", "reaper").Logger(),
 		provider: p,
@@ -115,33 +101,56 @@ type reaper struct {
 }
 
 func (r *reaper) Serve(ctx context.Context) error {
-	const delay = time.Minute
+	const delay = 10 * time.Second
 
 	reap := func() error {
-		r.log.Debug().Msg("adding services")
+		r.log.Debug().Msg("adding and reaping services")
 		opts, err := r.provider.store.GetServices(ctx)
 		if err != nil {
 			return fmt.Errorf("get services: %w", err)
 		}
+
+		// Any services which are in r.provider.serviceShutdownToken
+		// but no longer in opts were removed. We should delete them.
+		newServiceSet := make(map[string]struct{}, len(opts))
 		for _, opt := range opts {
+			newServiceSet[opt.Name] = struct{}{}
+		}
+		var toDelete []string
+		for name, token := range r.provider.serviceShutdownToken {
+			if _, exist := newServiceSet[name]; exist {
+				continue
+			}
+			err := r.provider.supervisor.Remove(token)
+			if err != nil {
+				return fmt.Errorf("remove %s: %w", name, err)
+			}
+			delete(r.provider.serviceShutdownToken, name)
+		}
+
+		// Start any new services
+		for _, opt := range opts {
+			_, exist := r.provider.serviceShutdownToken[opt.Name]
+			if exist {
+				continue
+			}
 			serviceLog := r.provider.log.With().
 				Str("service", opt.Name).
 				Logger()
-
 			service := newService(serviceLog, r.provider.terra,
 				tf.CloudProviderName(r.provider.name),
 				r.provider.store, r.provider.reporter,
 				r.provider.vms, opt)
 			token := r.provider.supervisor.Add(service)
 			r.provider.serviceShutdownToken[opt.Name] = token
-
 			serviceLog.Info().
 				Str("service", opt.Name).
 				Msg("tracking service")
 		}
 
+		// Delete orphaned VMs which are no longer attached to any
+		// service.
 		r.log.Debug().Msg("checking for orphaned vms")
-		var toDelete []string
 		plan := map[tf.CloudProviderName]*tf.ProviderPlan{}
 		vms := copySlice(r.provider.vms)
 		for _, vm := range vms {
@@ -152,20 +161,10 @@ func (r *reaper) Serve(ctx context.Context) error {
 				continue
 			}
 
-			// Shutdown any services which were running at the
-			// time.
-			token, ok := r.provider.serviceShutdownToken[parts[1]]
-			if ok {
-				delete(r.provider.serviceShutdownToken,
-					parts[1])
-				err := r.provider.supervisor.Remove(token)
-				if err != nil {
-					return fmt.Errorf("remove %s: %w",
-						parts[1], err)
-				}
+			_, exist := r.provider.serviceShutdownToken[parts[1]]
+			if exist {
+				continue
 			}
-
-			// And prepare to delete the boxes themselves.
 			cpName := tf.CloudProviderName(r.provider.name)
 			if plan[cpName] == nil {
 				plan[cpName] = &tf.ProviderPlan{}
@@ -182,9 +181,11 @@ func (r *reaper) Serve(ctx context.Context) error {
 				return ctx.Err()
 			}
 		}
+
 		r.log.Info().
 			Strs("names", toDelete).
 			Msg("reaping orphan vms")
+
 		if err := r.provider.terra.DestroyAll(plan); err != nil {
 			return fmt.Errorf("destroy all: %w", err)
 		}
