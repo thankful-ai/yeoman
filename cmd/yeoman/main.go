@@ -1,9 +1,9 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -13,15 +13,17 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"time"
 
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/client"
 	"github.com/egtann/yeoman"
-	"github.com/jhoonb/archivex"
-	"golang.org/x/oauth2/google"
+	"github.com/google/go-containerregistry/pkg/crane"
+	"github.com/google/go-containerregistry/pkg/name"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/mutate"
+	"github.com/google/go-containerregistry/pkg/v1/tarball"
 )
 
 const configPath = "yeoman.json"
@@ -108,11 +110,7 @@ func deployService(args []string, opts serviceOpts) error {
 		return fmt.Errorf("parse config: %w", err)
 	}
 
-	dockerClient, err := client.NewEnvClient()
-	if err != nil {
-		return fmt.Errorf("new env client: %s", err)
-	}
-	err = buildImage(dockerClient, conf.DockerRegistry, arg)
+	err = buildImage(conf.ContainerRegistry, arg)
 	if err != nil {
 		return fmt.Errorf("build image: %w", err)
 	}
@@ -274,8 +272,8 @@ func parseArg(args []string) (string, []string) {
 }
 
 type config struct {
-	IPs            []netip.AddrPort `json:"ips"`
-	DockerRegistry string           `json:"dockerRegistry"`
+	IPs               []netip.AddrPort `json:"ips"`
+	ContainerRegistry string           `json:"containerRegistry"`
 }
 
 func parseConfig() (config, error) {
@@ -309,7 +307,7 @@ func (e badArgError) Error() string {
 }
 
 func usage() {
-	fmt.Println(`usage: yeoman [init|service|deploy|status|version] ...`)
+	fmt.Println(`usage: yeoman [init|service|status|version] ...`)
 }
 
 func responseOK(rsp *http.Response) error {
@@ -321,80 +319,95 @@ func responseOK(rsp *http.Response) error {
 	}
 }
 
-func buildImage(
-	client *client.Client,
-	dockerRegistry, serviceName string,
-) error {
-	ctx := context.Background()
-
-	tar := &archivex.TarFile{}
-	tarFilename := fmt.Sprintf("/tmp/yeoman-%s.tar", serviceName)
-	err := tar.Create(tarFilename)
+func buildImage(containerRegistry, serviceName string) error {
+	// TODO(egtann) based on the type of app, use a different image and
+	// entrypoint.
+	const base = "gcr.io/distroless/static:latest"
+	fmt.Println("pulling", base)
+	img, err := crane.Pull(base)
 	if err != nil {
-		return fmt.Errorf("tar create: %w", err)
-	}
-	if err = tar.AddAll(".", false); err != nil {
-		return fmt.Errorf("tar add all: %w", err)
-	}
-	if err = tar.Close(); err != nil {
-		return fmt.Errorf("tar close: %w", err)
-	}
-	buildContext, err := os.Open(tarFilename)
-	if err != nil {
-		return fmt.Errorf("open tar: %w", err)
-	}
-	defer func() { _ = buildContext.Close() }()
-
-	tag := fmt.Sprintf("%s/%s:latest", dockerRegistry, serviceName)
-	buildOpts := types.ImageBuildOptions{
-		Context:    buildContext,
-		Dockerfile: filepath.Join(serviceName, "Dockerfile"),
-		Tags:       []string{tag},
-		Remove:     true,
+		return fmt.Errorf("pull: %w", err)
 	}
 
-	rsp, err := client.ImageBuild(ctx, buildContext, buildOpts)
+	layer, err := layerFromDir(serviceName)
 	if err != nil {
-		return fmt.Errorf("image build: %w", err)
+		return fmt.Errorf("layer from dir: %w", err)
 	}
-	defer func() { _ = rsp.Body.Close() }()
-
-	// TODO(egtann) errors come through in the response as JSON with a key
-	// of "errorDetail". Why do you hate me, Docker?
-	_, err = io.Copy(os.Stdout, rsp.Body)
+	img, err = mutate.AppendLayers(img, layer)
 	if err != nil {
-		return fmt.Errorf("copy: %w", err)
+		return fmt.Errorf("append layers: %w", err)
 	}
-
-	tokenSource, err := google.DefaultTokenSource(ctx)
+	img, err = mutate.Config(img, v1.Config{
+		Entrypoint: []string{serviceName},
+	})
 	if err != nil {
-		return fmt.Errorf("default token source: %w", err)
-	}
-	token, err := tokenSource.Token()
-	if err != nil {
-		return fmt.Errorf("token: %w", err)
+		return fmt.Errorf("mutate config: %w", err)
 	}
 
-	authConfig := types.AuthConfig{
-		Username: "oauth2accesstoken",
-		Password: token.AccessToken,
-	}
-	authConfigJSON, err := json.Marshal(authConfig)
+	tagName := fmt.Sprintf("%s/%s:latest", containerRegistry, serviceName)
+	tag, err := name.NewTag(tagName)
 	if err != nil {
-		return fmt.Errorf("marshal: %w", err)
+		return fmt.Errorf("new tag: %w", err)
 	}
-	pushOpts := types.ImagePushOptions{
-		RegistryAuth: base64.URLEncoding.EncodeToString(authConfigJSON),
-	}
-	readCloser, err := client.ImagePush(ctx, tag, pushOpts)
-	if err != nil {
-		return fmt.Errorf("image push: %w", err)
-	}
-	defer func() { _ = readCloser.Close() }()
+	tagName = tag.String()
 
-	if _, err = io.Copy(os.Stdout, readCloser); err != nil {
-		return fmt.Errorf("copy: %w", err)
+	fmt.Println("pushing", tagName)
+	if err := crane.Push(img, tagName); err != nil {
+		return fmt.Errorf("push: %w", err)
 	}
-
 	return nil
+}
+
+// layerFromDir is adapted from this great tutorial:
+// https://ahmet.im/blog/building-container-images-in-go/
+func layerFromDir(root string) (v1.Layer, error) {
+	var b bytes.Buffer
+	tw := tar.NewWriter(&b)
+
+	err := filepath.Walk(root, func(fp string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		rel, err := filepath.Rel(root, fp)
+		if err != nil {
+			return fmt.Errorf("failed to calculate relative path: %w", err)
+		}
+
+		hdr := &tar.Header{
+			Name: path.Join("/", filepath.ToSlash(rel)),
+			Mode: int64(info.Mode()),
+		}
+		if !info.IsDir() {
+			hdr.Size = info.Size()
+		}
+		if info.Mode().IsDir() {
+			hdr.Typeflag = tar.TypeDir
+		} else if info.Mode().IsRegular() {
+			hdr.Typeflag = tar.TypeReg
+		} else {
+			return fmt.Errorf("not implemented archiving file type %s (%s)", info.Mode(), rel)
+		}
+
+		if err := tw.WriteHeader(hdr); err != nil {
+			return fmt.Errorf("failed to write tar header: %w", err)
+		}
+		if !info.IsDir() {
+			f, err := os.Open(fp)
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(tw, f); err != nil {
+				return fmt.Errorf("failed to read file into the tar: %w", err)
+			}
+			defer func() { _ = f.Close() }()
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan files: %w", err)
+	}
+	if err := tw.Close(); err != nil {
+		return nil, fmt.Errorf("failed to finish tar: %w", err)
+	}
+	return tarball.LayerFromReader(&b)
 }
