@@ -80,12 +80,6 @@ func (rt *Router) postService(
 		return nil, badRequest(fmt.Errorf("decode: %w", err))
 	}
 
-	/*
-		if data.Name == "proxy" {
-			return nil, errors.New("cannot deploy proxy")
-		}
-	*/
-
 	// It may be appropriate to set up locking around this in case many
 	// people are making simultaneous changes, but that adds a lot of
 	// complexity, so we're going to err on the side of simplicity for now.
@@ -96,8 +90,8 @@ func (rt *Router) postService(
 	}
 
 	lg := hlog.FromRequest(r)
-	_, exists := services[data.Name]
-	if exists {
+	_, updating := services[data.Name]
+	if updating {
 		lg.Info().Str("name", data.Name).Msg("updating service")
 	} else {
 		lg.Info().Str("name", data.Name).Msg("creating service")

@@ -22,6 +22,7 @@ type Server struct {
 	reporter   Reporter
 	services   []ServiceOpts
 	serviceSet map[string]ServiceOpts
+	providers  []*provider
 	mu         sync.RWMutex
 
 	// supervisor to manage providers.
@@ -44,6 +45,9 @@ func NewServer(opts ServerOpts) *Server {
 	// Processes to monitor:
 	// * Check if any services have been deleted, reap them
 	// * Check if any services have been changed, delete and recreate
+	// * Check if any services need to be rebooted
+	//   - Reboots happen every 24 hours to apply security updates and
+	//     whenever an update is deployed.
 
 	return &Server{
 		log:        opts.Log,
@@ -65,6 +69,7 @@ func (s *Server) ServeBackground(
 ) error {
 	s.log.Info().Msg("starting server")
 
+	s.providers = make([]*provider, 0, len(providerRegistries))
 	for cp, cr := range providerRegistries {
 		s.log.Info().Str("provider", string(cp)).Msg("using provider")
 		p, err := newProvider(ctx, cp, cr, s.store, s.reporter, s.log)
@@ -72,10 +77,15 @@ func (s *Server) ServeBackground(
 			return fmt.Errorf("new provider: %w", err)
 		}
 		_ = s.supervisor.Add(p)
+		s.providers = append(s.providers, p)
 	}
 	_ = s.supervisor.Add(&serviceScanner{
 		server: s,
 		log:    s.log.With().Str("task", "serviceScanner").Logger(),
+	})
+	_ = s.supervisor.Add(&rebooter{
+		server: s,
+		log:    s.log.With().Str("task", "rebooter").Logger(),
 	})
 
 	errCh := s.supervisor.ServeBackground(ctx)
@@ -89,18 +99,57 @@ func (s *Server) ServeBackground(
 	return nil
 }
 
+type rebooter struct {
+	server *Server
+	log    zerolog.Logger
+}
+
+func (r *rebooter) Serve(ctx context.Context) error {
+	for {
+		select {
+		case <-time.After(24 * time.Hour):
+			// TODO(egtann) make this a concurrentSlice and
+			// randomize the order each time.
+			for _, p := range r.server.providers {
+				err := p.rollingRestart(ctx)
+				if err != nil {
+					return fmt.Errorf("rolling restart: %w", err)
+				}
+			}
+			continue
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
 type serviceScanner struct {
 	server *Server
 	log    zerolog.Logger
 }
 
 func (s *serviceScanner) Serve(ctx context.Context) error {
-	addService := func(opt ServiceOpts) {
+	addService := func(opt ServiceOpts) error {
 		s.server.mu.Lock()
 		defer s.server.mu.Unlock()
 
+		if oldOpts, exist := s.server.serviceSet[opt.Name]; exist {
+			if opt == oldOpts {
+				return nil
+			}
+			for _, p := range s.server.providers {
+				err := s.server.restartServiceVMs(ctx, p.terra,
+					opt.Name)
+				if err != nil {
+					return fmt.Errorf("restart service vms: %w",
+						err)
+				}
+			}
+			return nil
+		}
 		s.server.serviceSet[opt.Name] = opt
 		s.server.services = append(s.server.services, opt)
+		return nil
 	}
 	removeService := func(name string) error {
 		s.server.mu.Lock()
@@ -132,7 +181,9 @@ func (s *serviceScanner) Serve(ctx context.Context) error {
 		}
 
 		for _, opt := range newOpts {
-			addService(opt)
+			if err = addService(opt); err != nil {
+				return nil, fmt.Errorf("add service: %w", err)
+			}
 		}
 
 		// Find any marked for deletion.
@@ -167,236 +218,6 @@ func (s *serviceScanner) Serve(ctx context.Context) error {
 	}
 }
 
-// TODO XXX
-/*
-func todoUseSomewhere(
-	ctx context.Context,
-	providerRegistries map[tf.CloudProviderName]ContainerRegistry,
-) error {
-	opts, err := s.store.GetServices(ctx)
-	if err != nil {
-		return fmt.Errorf("get services: %w", err)
-	}
-
-	// Ensure we have a proxy service, which can never be deleted or
-	// removed.
-	/*
-		if _, exist := opts["proxy"]; !exist {
-			opts["proxy"] = ServiceOpts{
-				Name:        "proxy",
-				MachineType: "e2-micro",
-				DiskSizeGB:  10,
-				AllowHTTP:   true,
-				Min:         1, // TODO(egtann) set to 3.
-				Max:         1,
-			}
-			if err = s.store.SetServices(ctx, opts); err != nil {
-				return fmt.Errorf("set proxy service: %w", err)
-			}
-
-			// TODO(egtann) create and upload the image?
-		}
-	s.services = make([]*Service, 0, len(providerRegistries)*len(opts))
-
-	terra := tf.New(5 * time.Minute)
-	for cp, registry := range providerRegistries {
-		parts := strings.Split(string(cp), ":")
-		if len(parts) != 4 {
-			return fmt.Errorf("invalid cloud provider: %s", cp)
-		}
-		providerLog := s.log.With().Str("provider", "gcp").Logger()
-		switch parts[0] {
-		case "gcp":
-			var (
-				project = parts[1]
-				region  = parts[2]
-				zone    = parts[3]
-			)
-			tfGCP, err := gcp.New(providerLog, HTTPClient(),
-				project, region, zone, registry.Name,
-				registry.Path)
-			if err != nil {
-				return fmt.Errorf("gcp new: %w", err)
-			}
-			terra.WithProvider(cp, tfGCP)
-		default:
-			return fmt.Errorf("unknown cloud provider: %s", cp)
-		}
-
-		addService := func(opt ServiceOpts) {
-			s.mu.Lock()
-			defer s.mu.Unlock()
-
-			if service, exist := s.serviceSet[opt.Name]; exist {
-				if opt != service.opts {
-					s.restartServiceVMs(terra, opt.Name)
-				}
-				return
-			}
-			serviceLog := providerLog.With().
-				Str("service", opt.Name).
-				Logger()
-			serviceLog.Info().Msg("discovered service")
-			service := newService(serviceLog, terra, cp, s.store,
-				s.proxy, s.reporter, opt)
-			service.start()
-			s.serviceSet[opt.Name] = service
-			s.services = append(s.services, service)
-		}
-		removeService := func(name string) error {
-			s.mu.Lock()
-			defer s.mu.Unlock()
-
-			serviceLog := providerLog.With().
-				Str("service", name).
-				Logger()
-
-			service, exist := s.serviceSet[name]
-			if !exist {
-				return nil
-			}
-			serviceLog.Debug().Msg("tearing down vms")
-
-			if err := service.teardownAllVMs(); err != nil {
-				return fmt.Errorf("teardown all vms: %w", err)
-			}
-			serviceLog.Debug().Msg("all vms torn down")
-
-			delete(s.serviceSet, name)
-			services := make([]*Service, 0, len(s.serviceSet))
-			for _, service := range s.serviceSet {
-				services = append(services, service)
-			}
-			s.services = services
-			return nil
-		}
-
-		addRemoveServices := func(
-			oldOpts map[string]ServiceOpts,
-		) (map[string]ServiceOpts, error) {
-			if oldOpts == nil {
-				oldOpts = map[string]ServiceOpts{}
-			}
-
-			s.log.Debug().Msg("refreshing services")
-			ctx, cancel := context.WithTimeout(
-				context.Background(),
-				10*time.Second)
-			newOpts, err := s.store.GetServices(ctx)
-			cancel()
-			if err != nil {
-				return nil, fmt.Errorf("get services: %w", err)
-			}
-
-			for _, opt := range newOpts {
-				addService(opt)
-			}
-
-			// Find any marked for deletion.
-			for name := range oldOpts {
-				_, exist := newOpts[name]
-				if exist {
-					continue
-				}
-				err = removeService(name)
-				if err != nil {
-					return nil, fmt.Errorf("remove service: %w", err)
-				}
-			}
-			return newOpts, nil
-		}
-		restartAllVMs := func() {
-			// We restart every 24 hours to ensure that any hacks
-			// on the box are not persisted, to apply security
-			// updates, and to help avoid light memory and resource
-			// leaks causing outages.
-			s.log.Info().Msg("restarting services (24 hour uptime)")
-
-			inventory, err := terra.Inventory()
-			if err != nil {
-				err = fmt.Errorf("terrafirma inventory: %w", err)
-				s.reporter.Report(err)
-				return
-			}
-			jobs := make(chan []string)
-			for cpName, vms := range inventory {
-				names := make([]string, 0, len(vms))
-				for _, vm := range vms {
-					names = append(names, vm.Name)
-				}
-				nameBatches := makeBatches(names)
-
-				go func(cpName tf.CloudProviderName) {
-					for _, nameBatch := range nameBatches {
-						jobs <- nameBatch
-					}
-					close(jobs)
-				}(cpName)
-
-				var errs error
-				for batch := range jobs {
-					s.log.Info().
-						Strs("names", batch).
-						Msg("restarting batch")
-					err = terra.Restart(cpName, batch)
-					if err != nil {
-						errs = errors.Join(errs, err)
-					}
-				}
-				if errs != nil {
-					errs = fmt.Errorf("failed to restart services: %w", errs)
-					s.reporter.Report(errs)
-					return
-				}
-			}
-		}
-
-		// Continually look for newly created services and stop
-		// tracking old ones.
-		go func() {
-			defer func() { recoverPanic(s.reporter) }()
-
-			// Add and remove services immediately, then re-check
-			// every few seconds. Reap any orphans once we've
-			// retrieved our services.
-			opts, err := addRemoveServices(nil)
-			if err != nil {
-				err = fmt.Errorf("add remove services: %w", err)
-				s.reporter.Report(err)
-
-				// Keep going, don't return. We'll try again in
-				// a few seconds.
-			}
-			reapOrphans()
-
-			// Every 3 seconds we'll update our live services, and
-			// every 24 hours of uptime we'll reboot all services.
-			const targetIterations = 28_800 // 3-second periods in 24 hours
-			for i := 0; ; i++ {
-				if i > 0 && i%targetIterations == 0 {
-					restartAllVMs()
-
-					// Ensure we never overflow. Just start
-					// the count again.
-					i = 0
-				}
-				select {
-				case <-time.After(3 * time.Second):
-					opts, err = addRemoveServices(opts)
-					if err != nil {
-						err = fmt.Errorf("add remove services: %w", err)
-						s.reporter.Report(err)
-
-						// Keep going.
-					}
-				}
-			}
-		}()
-	}
-	return nil
-}
-*/
-
 func makeBatches[T any](items []T) [][]T {
 	var (
 		out      = [][]T{}
@@ -419,14 +240,17 @@ func makeBatches[T any](items []T) [][]T {
 	return append(out, next)
 }
 
-func (s *Server) restartServiceVMs(terra *tf.Terrafirma, serviceName string) {
+func (s *Server) restartServiceVMs(
+	ctx context.Context,
+	terra *tf.Terrafirma,
+	serviceName string,
+) error {
 	s.log.Info().Msg("restarting service vms")
 
+	// TODO(egtann) add ctx to Inventory.
 	inventory, err := terra.Inventory()
 	if err != nil {
-		err = fmt.Errorf("terrafirma inventory: %w", err)
-		s.reporter.Report(err)
-		return
+		return fmt.Errorf("terrafirma inventory: %w", err)
 	}
 	jobs := make(chan []string)
 	for cpName, vms := range inventory {
@@ -460,16 +284,15 @@ func (s *Server) restartServiceVMs(terra *tf.Terrafirma, serviceName string) {
 			s.log.Info().
 				Strs("names", batch).
 				Msg("restarting batch")
-			err = terra.Restart(cpName, batch)
+			err = terra.Restart(ctx, cpName, batch)
 			if err != nil {
 				errs = errors.Join(errs, err)
 			}
 		}
 		if errs != nil {
-			errs = fmt.Errorf("failed to restart services: %w",
+			return fmt.Errorf("failed to restart services: %w",
 				errs)
-			s.reporter.Report(errs)
-			return
 		}
 	}
+	return nil
 }

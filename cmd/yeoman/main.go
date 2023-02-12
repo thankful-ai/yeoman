@@ -124,6 +124,7 @@ func deployService(args []string, opts serviceOpts) error {
 		DiskSizeGB:  opts.diskSizeGB,
 		AllowHTTP:   opts.allowHTTP,
 		Count:       opts.count,
+		UpdatedAt:   time.Now(),
 	}
 	byt, err := json.Marshal(data)
 	if err != nil {

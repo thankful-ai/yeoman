@@ -63,18 +63,28 @@ func vmFromBox(boxes map[BoxName]*Box, vmTemplate *VMTemplate) (*VM, error) {
 }
 
 func (t *Terrafirma) Restart(
+	ctx context.Context,
 	cpName CloudProviderName,
 	boxNames []string,
 ) error {
-	ctx, cancel := context.WithTimeout(context.Background(), t.timeout)
+	ctx, cancel := context.WithTimeout(ctx, t.timeout)
 	defer cancel()
 
-	errCh := make(chan error)
+	var (
+		jobCh = make(chan string)
+		errCh = make(chan error)
+	)
 	for _, boxName := range boxNames {
-		go func(boxName string) {
-			errCh <- t.providers[cpName].Restart(ctx, boxName)
-		}(boxName)
+		jobCh <- boxName
 	}
+	close(jobCh)
+
+	go func() {
+		for boxName := range jobCh {
+			errCh <- t.providers[cpName].Restart(ctx, boxName)
+		}
+	}()
+
 	for i := 0; i < len(boxNames); i++ {
 		select {
 		case err := <-errCh:

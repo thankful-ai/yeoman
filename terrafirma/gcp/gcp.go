@@ -211,7 +211,7 @@ write_files:
     [Service]
     Environment="HOME=/home/cloudservice"
     ExecStartPre=/usr/bin/docker-credential-gcr configure-docker --registries %s
-    ExecStart=/usr/bin/docker run --rm -t -p 80:3000 --name=app %s/%s:latest
+    ExecStart=/usr/bin/docker run --pull=always --rm -t -p 80:3000 --name=app %s/%s:latest
     ExecStop=/usr/bin/docker stop app
     ExecStopPost=/usr/bin/docker rm app
 

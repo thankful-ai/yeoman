@@ -16,6 +16,7 @@ import (
 // this handler redirects to HTTPS. For POST, PUT, etc. this handler throws an
 // error letting the client know to use HTTPS.
 func (rp *ReverseProxy) RedirectHTTPHandler() (http.Handler, error) {
+	log.Println("REDIRECT HTTP HANDLER")
 	fn := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case "GET", "HEAD": // Do nothing
@@ -27,9 +28,11 @@ func (rp *ReverseProxy) RedirectHTTPHandler() (http.Handler, error) {
 		http.Redirect(w, r, target, http.StatusFound)
 	})
 	if rp.reg.SubnetMask == "" {
+		log.Println("SKIP1")
 		return fn, nil
 	}
 	if localIP := getLocalIP(); localIP == "" {
+		log.Println("SKIP2")
 		return fn, nil
 	}
 	maskedIP, mask, err := maskIP(rp.reg.SubnetMask)
@@ -37,6 +40,7 @@ func (rp *ReverseProxy) RedirectHTTPHandler() (http.Handler, error) {
 		return nil, fmt.Errorf("mask: %w", err)
 	}
 	fn = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		log.Println("HERE1", r.Method, r.URL)
 		switch r.Method {
 		case "GET", "HEAD": // Do nothing
 		default:
@@ -48,6 +52,7 @@ func (rp *ReverseProxy) RedirectHTTPHandler() (http.Handler, error) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		log.Println("MASK", maskedIP, net.ParseIP(host).Mask(mask).String(), strings.TrimPrefix(r.URL.Path, "/"))
 		if maskedIP == net.ParseIP(host).Mask(mask).String() {
 			if strings.TrimPrefix(r.URL.Path, "/") == "services" {
 				data := map[string][]string{}

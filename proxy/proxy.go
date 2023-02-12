@@ -178,7 +178,13 @@ func newRegistry(terra *tf.Terrafirma, baseConfig Config) (*Registry, error) {
 		SubnetMask: baseConfig.SubnetMask,
 	}
 	for name, ips := range serviceSet {
+		name = fmt.Sprintf("%s.%s", name, baseConfig.Host)
 		reg.Services[name] = &backend{Backends: ips}
+		fmt.Println(
+			"service", name,
+			"ips", ips,
+			"add service",
+		)
 	}
 	for host, v := range reg.Services {
 		if host == "" {
@@ -264,7 +270,7 @@ func (r *ReverseProxy) CheckHealth() error {
 		host.liveBackends = append(host.liveBackends, check.ip)
 
 		// Uncomment to log successful health-checks
-		// r.log.Printf("check health: %s 200 OK", check.ip)
+		r.log.Printf("check health: %s 200 OK", check.ip)
 	}
 
 	// Determine if the registry changed. If it's the same as before, we

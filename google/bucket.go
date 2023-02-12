@@ -70,6 +70,23 @@ func (b *Bucket) GetServices(
 	return out, nil
 }
 
+func (b *Bucket) SetService(
+	ctx context.Context,
+	serviceOpts yeoman.ServiceOpts,
+) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	byt, err := json.Marshal(serviceOpts)
+	if err != nil {
+		return fmt.Errorf("marshal: %w", err)
+	}
+	if err = b.set(ctx, serviceOpts.Name, byt); err != nil {
+		return fmt.Errorf("set: %w", err)
+	}
+	return nil
+}
+
 func (b *Bucket) SetServices(
 	ctx context.Context,
 	opts map[string]yeoman.ServiceOpts,

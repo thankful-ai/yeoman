@@ -46,8 +46,7 @@ type Service struct {
 	log           zerolog.Logger
 	reporter      Reporter
 	vms           *concurrentSlice[vmState]
-
-	jobManager *jobManager
+	jobManager    *jobManager
 
 	// supervisor to monitor the service using various checks to recreate
 	// boxes, etc. as needed.
@@ -82,7 +81,7 @@ func (jm *jobManager) Serve(ctx context.Context) error {
 			return ctx.Err()
 		}
 
-		vms := copySlice(jm.service.vms)
+		vms := jm.service.getVMs()
 		switch j.jobType {
 		case jtCreate:
 			err := jm.service.startupVMs(jm.service.opts, vms)
@@ -195,11 +194,12 @@ func newService(
 // ServiceOpts contains the persistant state of a Service, as configured via
 // `yeoman -n $count -c $container service create $name`.
 type ServiceOpts struct {
-	Name        string `json:"name"`
-	MachineType string `json:"machineType"`
-	DiskSizeGB  int    `json:"diskSizeGB"`
-	AllowHTTP   bool   `json:"allowHTTP"`
-	Count       int    `json:"count"`
+	Name        string    `json:"name"`
+	MachineType string    `json:"machineType"`
+	DiskSizeGB  int       `json:"diskSizeGB"`
+	AllowHTTP   bool      `json:"allowHTTP"`
+	Count       int       `json:"count"`
+	UpdatedAt   time.Time `json:"updatedAt"`
 }
 
 type stats struct {

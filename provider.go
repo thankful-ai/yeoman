@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
 	"strings"
 	"sync"
 	"time"
@@ -93,6 +94,23 @@ func newProvider(
 	})
 
 	return p, nil
+}
+
+func (p *provider) rollingRestart(ctx context.Context) error {
+	vms := copySlice(p.vms)
+	vmNames := make([]string, 0, len(vms))
+	for _, vm := range vms {
+		vmNames = append(vmNames, vm.vm.Name)
+	}
+	rand.Shuffle(len(vmNames), func(i, j int) {
+		vmNames[i], vmNames[j] =
+			vmNames[j], vmNames[i]
+	})
+	cpName := tf.CloudProviderName(p.name)
+	if err := p.terra.Restart(ctx, cpName, vmNames); err != nil {
+		return fmt.Errorf("restart: %w", err)
+	}
+	return nil
 }
 
 type reaper struct {
