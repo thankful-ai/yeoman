@@ -353,7 +353,7 @@ func buildImage(containerRegistry, serviceName string) error {
 	case python3:
 		base = "gcr.io/distroless/python3-debian11:latest"
 	case golang:
-		base = "gcr.io/distroless/static:latest"
+		base = "gcr.io/distroless/static-debian11:latest"
 	default:
 		return fmt.Errorf("unsupported app type: %s", conf.Type)
 	}
@@ -407,9 +407,12 @@ func layerFromDir(root string) (v1.Layer, error) {
 			return fmt.Errorf("failed to calculate relative path: %w", err)
 		}
 
-		// Skip the app configuration file, since that's only useful
-		// locally.
+		// Skip the app configuration file and source files, since
+		// these are only useful locally.
 		if rel == configPath {
+			return nil
+		}
+		if filepath.Ext(rel) == ".go" {
 			return nil
 		}
 
@@ -417,6 +420,7 @@ func layerFromDir(root string) (v1.Layer, error) {
 			Name: path.Join(workDir[1:], filepath.ToSlash(rel)),
 			Mode: int64(info.Mode()),
 		}
+		fmt.Println("CREATE", hdr.Name)
 		if !info.IsDir() {
 			hdr.Size = info.Size()
 		}
@@ -437,9 +441,10 @@ func layerFromDir(root string) (v1.Layer, error) {
 				return err
 			}
 			if _, err := io.Copy(tw, f); err != nil {
+				_ = f.Close()
 				return fmt.Errorf("failed to read file into the tar: %w", err)
 			}
-			defer func() { _ = f.Close() }()
+			_ = f.Close()
 		}
 		return nil
 	})

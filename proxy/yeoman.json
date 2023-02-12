@@ -1,0 +1,4 @@
+{
+	"type": "go",
+	"cmd": ["/app/proxy", "-c", "/app/config.json"]
+}

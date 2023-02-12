@@ -2,13 +2,11 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
-	"math/rand"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -16,16 +14,29 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/egtann/yeoman"
 	"github.com/egtann/yeoman/proxy"
-	"golang.org/x/crypto/acme/autocert"
+	tf "github.com/egtann/yeoman/terrafirma"
+	"github.com/egtann/yeoman/terrafirma/gcp"
+	"github.com/rs/zerolog"
 )
 
 const timeout = 30 * time.Second
 
 func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	output := zerolog.ConsoleWriter{Out: os.Stdout}
+	log := zerolog.New(output).With().Timestamp().Logger()
+
 	portTmp := flag.String("p", "3000", "port")
-	config := flag.String("c", "config.json", "config file")
-	sslURL := flag.String("url", "", "enable ssl on the proxy's url (optional)")
+	configPath := flag.String("c", "config.json", "config file")
+	// sslURL := flag.String("url", "", "enable ssl on the proxy's url (optional)")
 	flag.Usage = func() {
 		usage([]string{})
 	}
@@ -40,23 +51,61 @@ func main() {
 	if portInt < 0 {
 		issues = append(issues, "port cannot be negative")
 	}
-	var selfURL *url.URL
-	if len(*sslURL) > 0 {
-		selfURL, err = url.ParseRequestURI(*sslURL)
-		if err != nil {
-			issues = append(issues, "invalid url")
+
+	/*
+		var selfURL *url.URL
+		if len(*sslURL) > 0 {
+			selfURL, err = url.ParseRequestURI(*sslURL)
+			if err != nil {
+				issues = append(issues, "invalid url")
+			}
 		}
+	*/
+
+	// TODO(egtann) via a config file?
+	providerRegistries := map[tf.CloudProviderName]yeoman.ContainerRegistry{
+		"gcp:personal-199119:us-central1:us-central1-b": yeoman.ContainerRegistry{
+			Name: "us-central1-docker.pkg.dev",
+			Path: "us-central1-docker.pkg.dev/personal-199119/yeoman-dev",
+		},
 	}
-	reg, err := proxy.NewRegistry(*config)
-	if err != nil {
-		issues = append(issues, err.Error())
+	terra := tf.New(5 * time.Minute)
+	for cp, registry := range providerRegistries {
+		parts := strings.Split(string(cp), ":")
+		if len(parts) != 4 {
+			return fmt.Errorf("invalid cloud provider: %s", cp)
+		}
+		providerLog := log.With().Str("provider", "gcp").Logger()
+		switch parts[0] {
+		case "gcp":
+			var (
+				project = parts[1]
+				region  = parts[2]
+				zone    = parts[3]
+			)
+			tfGCP, err := gcp.New(providerLog, proxy.HTTPClient(),
+				project, region, zone, registry.Name,
+				registry.Path)
+			if err != nil {
+				return fmt.Errorf("gcp new: %w", err)
+			}
+			terra.WithProvider(cp, tfGCP)
+		default:
+			return fmt.Errorf("unknown cloud provider: %s", cp)
+		}
 	}
 	if len(issues) > 0 {
 		usage(issues)
 		os.Exit(1)
 	}
-	rand.Seed(time.Now().UnixNano())
-	rp := proxy.NewProxy(&logger{}, reg, timeout)
+	config, err := parseConfig(*configPath)
+	if err != nil {
+		return fmt.Errorf("parse config: %w", err)
+	}
+	rp, err := proxy.NewProxy(log, terra, config, timeout)
+	if err != nil {
+		return fmt.Errorf("new proxy: %w", err)
+	}
 
 	// Set up the API only if Subnet is configured and the internal
 	// IP of the proxy server can be determined.
@@ -66,69 +115,65 @@ func main() {
 		WriteTimeout:   timeout,
 		MaxHeaderBytes: 1 << 20,
 	}
-	if len(*sslURL) > 0 {
-		hosts := append(reg.Hosts(), selfURL.Host)
-		m := &autocert.Manager{
-			Cache:      autocert.DirCache("certs"),
-			Prompt:     autocert.AcceptTOS,
-			HostPolicy: autocert.HostWhitelist(hosts...),
-		}
-		getCert := func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-			log.Printf("get cert for %s", hello.ServerName)
-			cert, err := m.GetCertificate(hello)
-			if err != nil {
-				log.Println("failed to get cert:", err)
-			}
-			return cert, err
-		}
-		srv.TLSConfig = &tls.Config{GetCertificate: getCert}
-		apiHandler, err := rp.RedirectHTTPHandler()
-		if err != nil {
-			log.Fatal(err)
-		}
-		go func() {
-			err = http.ListenAndServe(":80", m.HTTPHandler(apiHandler))
-			if err != nil {
-				log.Fatal(fmt.Printf("listen and serve: %s", err))
-			}
-		}()
-		port = "443"
-		srv.Addr = ":443"
-		go func() {
-			log.Println("serving tls")
-			if err = srv.ListenAndServeTLS("", ""); err != nil {
-				log.Fatal(err)
-			}
-		}()
-	} else {
-		srv.Addr = ":" + port
-		go func() {
-			// Send 2 because we're listening for two
-			if err = srv.ListenAndServe(); err != nil {
-				log.Fatal(err)
-			}
-		}()
-	}
 
-	log.Println("listening on", port)
+	// TODO(egtann) add support for SSL, not just on the hosts at boot, but
+	// any hosts discovered while running.
+	/*
+		if len(*sslURL) > 0 {
+			hosts := append(reg.Hosts(), selfURL.Host)
+			m := &autocert.Manager{
+				Cache:      autocert.DirCache("certs"),
+				Prompt:     autocert.AcceptTOS,
+				HostPolicy: autocert.HostWhitelist(hosts...),
+			}
+			getCert := func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+				log.Printf("get cert for %s", hello.ServerName)
+				cert, err := m.GetCertificate(hello)
+				if err != nil {
+					log.Println("failed to get cert:", err)
+				}
+				return cert, err
+			}
+			srv.TLSConfig = &tls.Config{GetCertificate: getCert}
+			apiHandler, err := rp.RedirectHTTPHandler()
+			if err != nil {
+				return fmt.Errorf("redirect http handler: %w", err)
+			}
+			go func() {
+				err = http.ListenAndServe(":80", m.HTTPHandler(apiHandler))
+				if err != nil {
+					log.Fatal(fmt.Printf("listen and serve: %s", err))
+				}
+			}()
+			port = "443"
+			srv.Addr = ":443"
+			go func() {
+				log.Println("serving tls")
+				if err = srv.ListenAndServeTLS("", ""); err != nil {
+					log.Fatal(err)
+				}
+			}()
+		} else {
+		}
+	*/
+
+	srv.Addr = ":" + port
+	go func() {
+		// Send 2 because we're listening for two
+		if err = srv.ListenAndServe(); err != nil {
+			log.Fatal().Err(err).Msg("listen and serve")
+		}
+	}()
+
+	log.Info().Str("port", port).Msg("listening")
 	if err = rp.CheckHealth(); err != nil {
-		log.Println("check health", err)
+		log.Error().Err(err).Msg("check health")
 	}
 	sighupCh := make(chan bool)
-	go hotReloadConfig(*config, rp, sighupCh)
 	go checkHealth(rp, sighupCh)
-	gracefulRestart(srv, timeout)
-}
+	gracefulRestart(log, srv, timeout)
 
-// logger implements the proxy.Logger interface.
-type logger struct{}
-
-func (l *logger) Printf(format string, vals ...interface{}) {
-	log.Printf(format, vals...)
-}
-
-func (l *logger) ReqPrintf(reqID, format string, vals ...interface{}) {
-	log.Printf(reqID+": "+format, vals...)
+	return nil
 }
 
 // checkHealth of backend servers constantly. We cancel the current health
@@ -148,48 +193,38 @@ func checkHealth(proxy *proxy.ReverseProxy, sighupCh <-chan bool) {
 	}
 }
 
-// hotReloadConfig listens for a reload signal (sighup), then reloads the
-// registry from the config file. This recursively calls itself, so it can
-// handle the signal multiple times.
-//
-// TODO(egtann) remove infinite recursion.
-func hotReloadConfig(
-	filename string,
-	rp *proxy.ReverseProxy,
-	sighupCh chan bool,
-) {
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGHUP)
-	<-stop
-
-	log.Println("reloading config...")
-	reg, err := proxy.NewRegistry(filename)
-	if err != nil {
-		log.Fatal(err)
-	}
-	rp.UpdateRegistry(reg)
-	log.Println("reloaded config")
-	sighupCh <- true
-	go checkHealth(rp, sighupCh)
-	hotReloadConfig(filename, rp, sighupCh)
-}
-
 // gracefulRestart listens for an interupt or terminate signal. When either is
 // received, it stops accepting new connections and allows all existing
 // connections up to 10 seconds to complete. If connections do not shut down in
 // time, this exits with 1.
-func gracefulRestart(srv *http.Server, timeout time.Duration) {
+func gracefulRestart(
+	log zerolog.Logger,
+	srv *http.Server,
+	timeout time.Duration,
+) {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
-	log.Println("shutting down...")
+	log.Info().Msg("shutting down...")
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {
-		log.Println("failed to shutdown server gracefully", err)
+		log.Error().Err(err).Msg("failed to shutdown server gracefully")
 		os.Exit(1)
 	}
-	log.Println("shut down")
+	log.Info().Msg("shut down")
+}
+
+func parseConfig(configPath string) (proxy.Config, error) {
+	var conf proxy.Config
+	byt, err := os.ReadFile(configPath)
+	if err != nil {
+		return conf, fmt.Errorf("read file: %w", err)
+	}
+	if err = json.Unmarshal(byt, &conf); err != nil {
+		return conf, fmt.Errorf("unmarshal: %w", err)
+	}
+	return conf, nil
 }
 
 func usage(issues []string) {

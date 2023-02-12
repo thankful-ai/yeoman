@@ -26,13 +26,13 @@ func (rp *ReverseProxy) RedirectHTTPHandler() (http.Handler, error) {
 		target := "https://" + stripPort(r.Host) + r.URL.RequestURI()
 		http.Redirect(w, r, target, http.StatusFound)
 	})
-	if rp.reg.API.Subnet == "" {
+	if rp.reg.SubnetMask == "" {
 		return fn, nil
 	}
 	if localIP := getLocalIP(); localIP == "" {
 		return fn, nil
 	}
-	maskedIP, mask, err := maskIP(rp.reg.API.Subnet)
+	maskedIP, mask, err := maskIP(rp.reg.SubnetMask)
 	if err != nil {
 		return nil, fmt.Errorf("mask: %w", err)
 	}

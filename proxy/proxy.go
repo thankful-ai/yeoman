@@ -2,31 +2,26 @@ package proxy
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"io/ioutil"
 	"math/rand"
 	"net"
 	"net/http"
 	"net/http/httputil"
-	"net/url"
-	"os"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/egtann/yeoman"
+	tf "github.com/egtann/yeoman/terrafirma"
 	cleanhttp "github.com/hashicorp/go-cleanhttp"
 	"github.com/rs/xid"
+	"github.com/rs/zerolog"
 )
 
-// ReverseProxy maps frontend hosts to backends. If HealthPath is set in the
-// config.json file, ReverseProxy checks the health of backend servers
-// periodically and automatically removes them from rotation until health
-// checks pass.
+// ReverseProxy maps frontend hosts to backends. It will automatically check
+// the `/health` path of backend servers periodically and removes dead backends
+// from rotation until health checks pass.
 type ReverseProxy struct {
 	rp       httputil.ReverseProxy
 	reg      *Registry
@@ -34,7 +29,7 @@ type ReverseProxy struct {
 	jobCh    chan *healthCheck
 	resultCh chan *healthCheck
 	mu       sync.RWMutex
-	log      Logger
+	log      zerolog.Logger
 }
 
 // Registry maps hosts to backends with other helpful info, such as
@@ -43,22 +38,26 @@ type Registry struct {
 	// Services maps hostnames to one of the following:
 	//
 	// * IPs with optional healthcheck paths, OR
-	// * A redirect to another hostname
 	Services map[string]*backend `json:"services"`
 
 	// API restricts internal API access to a subnet, which should be an
 	// private LAN.
-	API struct{ Subnet string } `json:"api,omitempty"`
+	SubnetMask string `json:"subnetMask,omitempty"`
 }
 
-var _ yeoman.Proxy = &ReverseProxy{}
+type Config struct {
+	// Host in the form of "google.com"
+	Host string `json:"host"`
+
+	// SubnetMask in the form of "10.128.0.0/20"
+	SubnetMask string `json:"subnetMask"`
+}
 
 func (r *ReverseProxy) UpsertService(name string, ips []string) {
 	reg := r.cloneRegistry()
 
 	b := &backend{
-		Backends:   make([]string, 0, len(ips)),
-		HealthPath: "/health",
+		Backends: make([]string, 0, len(ips)),
 	}
 	for _, ip := range ips {
 		b.Backends = append(b.Backends, ip)
@@ -68,39 +67,9 @@ func (r *ReverseProxy) UpsertService(name string, ips []string) {
 	r.UpdateRegistry(reg)
 }
 
-// redirect describes how the proxy should redirect to another host.
-type redirect struct {
-	// URL to which the proxy should redirect. If DiscardPath is false (the
-	// default), the URL's path will be overwritten.
-	URL string `json:"url"`
-
-	// url is the parsed form of URL.
-	url *url.URL
-
-	// Permanent indicates whether the client should redirect itself in
-	// future requests. By default the redirect is temporary.
-	Permanent bool `json:"permanent"`
-
-	// DiscardPath will strip any path for the URL while redirecting. By
-	// default the path is preserved.
-	DiscardPath bool `json:"discardPath"`
-}
-
 type backend struct {
-	HealthPath   string   `json:"healthPath,omitempty"`
 	Backends     []string `json:"backends,omitempty"`
 	liveBackends []string
-
-	// Redirect from a given hostname to another. If provided, HealthPath
-	// and Backends MUST be empty.
-	Redirect *redirect `json:"redirect,omitempty"`
-}
-
-// Logger logs error messages for the caller where those errors don't require
-// returning, i.e. the logging itself constitutes handling the error.
-type Logger interface {
-	Printf(format string, vals ...interface{})
-	ReqPrintf(reqID, format string, vals ...interface{})
 }
 
 type healthCheck struct {
@@ -111,7 +80,12 @@ type healthCheck struct {
 }
 
 // NewProxy from a given Registry.
-func NewProxy(log Logger, reg *Registry, timeout time.Duration) *ReverseProxy {
+func NewProxy(
+	log zerolog.Logger,
+	terra *tf.Terrafirma,
+	config Config,
+	timeout time.Duration,
+) (*ReverseProxy, error) {
 	director := func(req *http.Request) {
 		req.URL.Scheme = "http"
 		req.URL.Host = req.Host
@@ -121,8 +95,15 @@ func NewProxy(log Logger, reg *Registry, timeout time.Duration) *ReverseProxy {
 			reqID = xid.New().String()
 			req.Header.Set("X-Request-ID", reqID)
 		}
-		log.ReqPrintf(reqID, "%s requested %s %s", req.RemoteAddr,
-			req.Method, req.Host)
+		log.Info().
+			Str("reqID", reqID).
+			Str("method", req.Method).
+			Str("host", req.Host).
+			Msg("request")
+	}
+	reg, err := newRegistry(terra, config)
+	if err != nil {
+		return nil, fmt.Errorf("new registry: %w", err)
 	}
 	transport := newTransport(reg, timeout)
 	errorHandler := func(w http.ResponseWriter, r *http.Request, err error) {
@@ -145,7 +126,7 @@ func NewProxy(log Logger, reg *Registry, timeout time.Duration) *ReverseProxy {
 			}
 		}(jobCh, resultCh)
 	}
-	return &ReverseProxy{
+	out := &ReverseProxy{
 		rp:       rp,
 		log:      log,
 		reg:      reg,
@@ -153,85 +134,61 @@ func NewProxy(log Logger, reg *Registry, timeout time.Duration) *ReverseProxy {
 		jobCh:    jobCh,
 		resultCh: resultCh,
 	}
+	return out, nil
 }
 
 func (r *ReverseProxy) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	// Handle redirects before proxying. Non-existent host errors will be
-	// handled by the reverse proxy, so we don't need to handle them here.
-	// We want to unlock this as quickly as possible, not just after the
-	// request is done for cases like websockets where the request stays
-	// open indefinitely.
-	r.mu.RLock()
-	host, ok := r.reg.Services[req.Host]
-	r.mu.RUnlock()
-	if ok && host.Redirect != nil {
-		doRedirect(w, req, host.Redirect)
-		return
-	}
 	r.rp.ServeHTTP(w, req)
 }
 
-func doRedirect(w http.ResponseWriter, r *http.Request, rdr *redirect) {
-	uri := rdr.url
-	if rdr.DiscardPath {
-		uri.Path = ""
-	} else {
-		uri.Path = r.URL.Path
+func newRegistry(terra *tf.Terrafirma, baseConfig Config) (*Registry, error) {
+	if strings.TrimSpace(baseConfig.Host) == "" {
+		return nil, errors.New("host must not be empty")
 	}
-	code := http.StatusTemporaryRedirect
-	if rdr.Permanent {
-		code = http.StatusPermanentRedirect
-	}
-	http.Redirect(w, r, uri.String(), code)
-}
 
-func newRegistry(r io.Reader) (*Registry, error) {
-	byt, err := ioutil.ReadAll(r)
+	// TODO(egtann) instead of passing in a registry, this should instead
+	// retrieve all VMs from Google, look for names matching "ym-*-*", and
+	// use each name as a different service.
+	cps, err := terra.Inventory()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("inventory: %w", err)
 	}
-	reg := &Registry{}
-	err = json.Unmarshal(byt, reg)
-	if err != nil {
-		return nil, fmt.Errorf("unmarshal config: %w", err)
+	serviceSet := map[string][]string{}
+	const prefix = "ym-"
+	for _, vms := range cps {
+		for _, vm := range vms {
+			if !strings.HasPrefix(vm.Name, prefix) {
+				continue
+			}
+			name, _, found := strings.Cut(
+				strings.TrimPrefix(vm.Name, prefix), "-")
+			if !found {
+				continue
+			}
+			for _, ip := range vm.IPs {
+				if ip.Type == tf.IPInternal {
+					serviceSet[name] = append(serviceSet[name], ip.Addr)
+				}
+			}
+		}
+	}
+
+	reg := &Registry{
+		Services:   make(map[string]*backend, len(serviceSet)),
+		SubnetMask: baseConfig.SubnetMask,
+	}
+	for name, ips := range serviceSet {
+		reg.Services[name] = &backend{Backends: ips}
 	}
 	for host, v := range reg.Services {
 		if host == "" {
 			return nil, errors.New("host cannot be empty")
-		}
-		if v.Redirect != nil {
-			if v.Redirect.URL == "" {
-				return nil, fmt.Errorf("%s: URL cannot be empty", host)
-			}
-			if len(v.Backends) > 0 {
-				return nil, fmt.Errorf("%s: Backends must be empty for redirect", host)
-			}
-			if v.HealthPath != "" {
-				return nil, fmt.Errorf("%s: HealthPath must be empty for redirect", host)
-			}
-			v.Redirect.url, err = url.Parse(v.Redirect.URL)
-			if err != nil {
-				return nil, fmt.Errorf("parse %s: %w",
-					v.Redirect.URL, err)
-			}
-			continue
 		}
 		if len(v.Backends) == 0 {
 			return nil, fmt.Errorf("%s: Backends cannot be empty", host)
 		}
 	}
 	return reg, nil
-}
-
-// NewRegistry for a given configuration file. This reports an error if any
-// frontend host has no backends.
-func NewRegistry(filename string) (*Registry, error) {
-	fi, err := os.Open(filename)
-	if err != nil {
-		return nil, fmt.Errorf("read file %s: %w", filename, err)
-	}
-	defer fi.Close()
-	return newRegistry(fi)
 }
 
 // Hosts for the registry suitable for generating HTTPS certificates. This
@@ -258,13 +215,11 @@ func (r *ReverseProxy) cloneRegistry() *Registry {
 // is provided outside the function.
 func cloneRegistryNoLock(reg *Registry) *Registry {
 	clone := &Registry{
-		Services: make(map[string]*backend, len(reg.Services)),
-		API:      reg.API,
+		Services:   make(map[string]*backend, len(reg.Services)),
+		SubnetMask: reg.SubnetMask,
 	}
 	for host, fe := range reg.Services {
 		cfe := &backend{
-			Redirect:     fe.Redirect,
-			HealthPath:   fe.HealthPath,
 			Backends:     make([]string, len(fe.Backends)),
 			liveBackends: make([]string, len(fe.liveBackends)),
 		}
@@ -282,16 +237,12 @@ func (r *ReverseProxy) CheckHealth() error {
 	origReg := r.cloneRegistry()
 	newReg := cloneRegistryNoLock(origReg)
 	for host, frontend := range newReg.Services {
-		if frontend.HealthPath == "" {
-			frontend.liveBackends = frontend.Backends
-			continue
-		}
 		frontend.liveBackends = []string{}
 		for _, ip := range frontend.Backends {
 			checks = append(checks, &healthCheck{
 				host:       host,
 				ip:         ip,
-				healthPath: frontend.HealthPath,
+				healthPath: "/health",
 			})
 		}
 	}
@@ -433,4 +384,26 @@ func min(i1, i2 int) int {
 		return i1
 	}
 	return i2
+}
+
+// HTTPClient returns an HTTP client that doesn't share a global transport. The
+// implementation is taken from github.com/hashicorp/go-cleanhttp.
+func HTTPClient() *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   30 * time.Second,
+				KeepAlive: 30 * time.Second,
+				DualStack: true,
+			}).DialContext,
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConnsPerHost:   -1,
+			DisableKeepAlives:     true,
+		},
+	}
 }
