@@ -1,4 +1,4 @@
 {
-    "domain": "evantann.com",
+    "host": "evantann.com",
     "subnetMask": "10.128.0.0/20"
 }

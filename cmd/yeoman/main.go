@@ -373,6 +373,7 @@ func buildImage(containerRegistry, serviceName string) error {
 	}
 	img, err = mutate.Config(img, v1.Config{
 		Cmd: conf.Cmd,
+		Env: []string{"GOOGLE_APPLICATION_CREDENTIALS=/app/application_default_credentials.json"},
 	})
 	if err != nil {
 		return fmt.Errorf("mutate config: %w", err)
@@ -420,7 +421,6 @@ func layerFromDir(root string) (v1.Layer, error) {
 			Name: path.Join(workDir[1:], filepath.ToSlash(rel)),
 			Mode: int64(info.Mode()),
 		}
-		fmt.Println("CREATE", hdr.Name)
 		if !info.IsDir() {
 			hdr.Size = info.Size()
 		}
