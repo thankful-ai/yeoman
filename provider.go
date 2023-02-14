@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	tf "github.com/egtann/yeoman/terrafirma"
-	"github.com/egtann/yeoman/terrafirma/gcp"
 	"github.com/rs/zerolog"
+	tf "github.com/thankful-ai/yeoman/terrafirma"
+	"github.com/thankful-ai/yeoman/terrafirma/gcp"
 	"github.com/thejerf/suture/v4"
 )
 

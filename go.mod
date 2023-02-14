@@ -1,4 +1,4 @@
-module github.com/egtann/yeoman
+module github.com/thankful-ai/yeoman
 
 go 1.20
 

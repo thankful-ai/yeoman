@@ -9,11 +9,11 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/egtann/yeoman"
-	"github.com/egtann/yeoman/google"
-	"github.com/egtann/yeoman/http"
-	tf "github.com/egtann/yeoman/terrafirma"
 	"github.com/rs/zerolog"
+	"github.com/thankful-ai/yeoman"
+	"github.com/thankful-ai/yeoman/google"
+	"github.com/thankful-ai/yeoman/http"
+	tf "github.com/thankful-ai/yeoman/terrafirma"
 )
 
 func main() {

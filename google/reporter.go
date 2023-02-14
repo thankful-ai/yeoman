@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/egtann/yeoman"
 	"github.com/rs/zerolog"
+	"github.com/thankful-ai/yeoman"
 )
 
 var _ yeoman.Reporter = &Reporter{}

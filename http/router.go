@@ -7,11 +7,11 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/egtann/yeoman"
 	"github.com/go-chi/chi"
 	"github.com/go-chi/chi/middleware"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/hlog"
+	"github.com/thankful-ai/yeoman"
 )
 
 const (

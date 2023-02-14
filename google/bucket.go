@@ -9,7 +9,7 @@ import (
 	"sync"
 
 	"cloud.google.com/go/storage"
-	"github.com/egtann/yeoman"
+	"github.com/thankful-ai/yeoman"
 	"google.golang.org/api/iterator"
 )
 

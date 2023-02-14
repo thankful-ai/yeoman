@@ -9,7 +9,7 @@ import (
 	"reflect"
 	"testing"
 
-	tf "github.com/egtann/yeoman/terrafirma"
+	tf "github.com/thankful-ai/yeoman/terrafirma"
 )
 
 var data = map[string][]byte{}

@@ -6,7 +6,7 @@ import (
 	"sort"
 	"testing"
 
-	tf "github.com/egtann/yeoman/terrafirma"
+	tf "github.com/thankful-ai/yeoman/terrafirma"
 )
 
 func TestFirstID(t *testing.T) {

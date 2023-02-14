@@ -14,9 +14,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/egtann/yeoman/terrafirma"
-	tf "github.com/egtann/yeoman/terrafirma"
 	"github.com/rs/zerolog"
+	"github.com/thankful-ai/yeoman/terrafirma"
+	tf "github.com/thankful-ai/yeoman/terrafirma"
 	"github.com/thejerf/suture/v4"
 )
 

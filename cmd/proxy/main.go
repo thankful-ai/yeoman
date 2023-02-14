@@ -14,11 +14,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/egtann/yeoman"
-	"github.com/egtann/yeoman/proxy"
-	tf "github.com/egtann/yeoman/terrafirma"
-	"github.com/egtann/yeoman/terrafirma/gcp"
+	"github.com/egtann/thankful-ai/terrafirma/gcp"
 	"github.com/rs/zerolog"
+	"github.com/thankful-ai/yeoman"
+	"github.com/thankful-ai/yeoman/proxy"
+	tf "github.com/thankful-ai/yeoman/terrafirma"
 )
 
 const timeout = 30 * time.Second

@@ -13,10 +13,10 @@ import (
 	"sync"
 	"time"
 
-	tf "github.com/egtann/yeoman/terrafirma"
 	cleanhttp "github.com/hashicorp/go-cleanhttp"
 	"github.com/rs/xid"
 	"github.com/rs/zerolog"
+	tf "github.com/thankful-ai/yeoman/terrafirma"
 )
 
 // ReverseProxy maps frontend hosts to backends. It will automatically check

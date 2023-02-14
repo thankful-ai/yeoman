@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	tf "github.com/egtann/yeoman/terrafirma"
 	"github.com/rs/zerolog"
+	tf "github.com/thankful-ai/yeoman/terrafirma"
 	"golang.org/x/oauth2/google"
 )
 

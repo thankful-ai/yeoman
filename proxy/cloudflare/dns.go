@@ -11,7 +11,7 @@ import (
 	"net/url"
 	"strconv"
 
-	"github.com/egtann/yeoman/proxy"
+	"github.com/thankful-ai/yeoman/proxy"
 )
 
 const baseURL = "https://api.cloudflare.com/client/v4/zones/%s/dns_records"
