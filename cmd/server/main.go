@@ -144,13 +144,12 @@ func run() error {
 		shutdown := make(chan os.Signal, 1)
 		signal.Notify(shutdown, syscall.SIGINT, syscall.SIGTERM)
 		<-shutdown
-
-		log.Info("shutting down...")
 		cancel()
-		os.Exit(0)
 	}()
 
 	// Hang on the main thread until the graceful shutdown logic executes
 	// above.
-	select {}
+	<-ctx.Done()
+	log.Info("shutting down...")
+	return nil
 }
