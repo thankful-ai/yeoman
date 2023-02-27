@@ -80,7 +80,7 @@ func (g *GCP) GetAllVMs(
 	for _, v := range data.Items {
 		vm, err := vmFromGoogle(v)
 		if err != nil {
-			return nil, fmt.Errorf("map to vm: %w", err)
+			return nil, fmt.Errorf("vm from google: %w", err)
 		}
 		vms = append(vms, vm)
 	}
@@ -361,7 +361,8 @@ func vmFromGoogle(v *vm) (yeoman.VM, error) {
 	ni := v.NetworkInterfaces[0]
 	addr, err := netip.ParseAddr(ni.NetworkIP)
 	if err != nil {
-		return zero, fmt.Errorf("parse addr: %w", err)
+		return zero, fmt.Errorf(
+			"parse addr: network interface %+v: %w", ni, err)
 	}
 	ips := yeoman.StaticVMIPs{
 		Internal: yeoman.IP{
@@ -376,7 +377,8 @@ func vmFromGoogle(v *vm) (yeoman.VM, error) {
 
 	addr, err = netip.ParseAddr(ac.NatIP)
 	if err != nil {
-		return zero, fmt.Errorf("parse addr: %w", err)
+		return zero, fmt.Errorf("parse addr: access config %+v: %w",
+			ac, err)
 	}
 	ips.External = yeoman.IP{
 		Name:     ac.Name,
