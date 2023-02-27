@@ -22,7 +22,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
-	"github.com/google/go-containerregistry/pkg/v1/stream"
+	"github.com/google/go-containerregistry/pkg/v1/tarball"
 	"github.com/thankful-ai/yeoman/internal/google"
 	"github.com/thankful-ai/yeoman/internal/yeoman"
 	"golang.org/x/exp/slog"
@@ -537,5 +537,9 @@ func layerFromDir(root string) (v1.Layer, error) {
 	if err := tw.Close(); err != nil {
 		return nil, fmt.Errorf("failed to finish tar: %w", err)
 	}
-	return stream.NewLayer(io.NopCloser(&b)), nil
+	tb, err := tarball.LayerFromReader(&b)
+	if err != nil {
+		return nil, fmt.Errorf("layer from reader: %w", err)
+	}
+	return tb, nil
 }
