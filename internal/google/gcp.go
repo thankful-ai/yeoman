@@ -375,14 +375,16 @@ func vmFromGoogle(v *vm) (yeoman.VM, error) {
 	}
 	ac := ni.AccessConfigs[0]
 
-	addr, err = netip.ParseAddr(ac.NatIP)
-	if err != nil {
-		return zero, fmt.Errorf("parse addr: access config %+v: %w",
-			ac, err)
-	}
 	ips.External = yeoman.IP{
-		Name:     ac.Name,
-		AddrPort: netip.AddrPortFrom(addr, 80),
+		Name: ac.Name,
+	}
+	if ac.NatIP != "" {
+		addr, err = netip.ParseAddr(ac.NatIP)
+		if err != nil {
+			return zero, fmt.Errorf(
+				"parse addr: access config %+v: %w", ac, err)
+		}
+		ips.External.AddrPort = netip.AddrPortFrom(addr, 80)
 	}
 
 	// Google signals whether ports 80 and 443 are open using tags.
