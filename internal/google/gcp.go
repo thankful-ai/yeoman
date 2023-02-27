@@ -231,9 +231,6 @@ func (g *GCP) RestartVM(
 // vmToGoogle will select the smallest possible machine type that satisfies the
 // CPU and memory requirements.
 func (g *GCP) vmToGoogle(v yeoman.VM) (*vm, error) {
-	internalIP := v.IPs.Internal.AddrPort.Addr().String()
-	externalIP := v.IPs.External.AddrPort.Addr().String()
-
 	var gpus []*guestAccelerator
 	if v.GPU != nil {
 		typ := fmt.Sprintf("projects/%s/zones/%s/acceleratorTypes/%s",
@@ -266,9 +263,8 @@ func (g *GCP) vmToGoogle(v yeoman.VM) (*vm, error) {
 		NetworkInterfaces: []*networkInterface{{
 			Network: "global/networks/default",
 			AccessConfigs: []*accessConfig{{
-				Type:  "ONE_TO_ONE_NAT",
-				Name:  "External NAT",
-				NatIP: externalIP,
+				Type: "ONE_TO_ONE_NAT",
+				Name: "External NAT",
 			}},
 		}},
 		Tags: tags{Items: v.Tags},
@@ -295,11 +291,11 @@ func (g *GCP) vmToGoogle(v yeoman.VM) (*vm, error) {
 			}},
 		},
 	}
-	if internalIP != "" {
-		googleVM.NetworkInterfaces[0].NetworkIP = internalIP
+	if addr := v.IPs.Internal.AddrPort.Addr(); addr.IsValid() {
+		googleVM.NetworkInterfaces[0].NetworkIP = addr.String()
 	}
-	if externalIP != "" {
-		googleVM.NetworkInterfaces[0].AccessConfigs[0].NatIP = externalIP
+	if addr := v.IPs.External.AddrPort.Addr(); addr.IsValid() {
+		googleVM.NetworkInterfaces[0].AccessConfigs[0].NatIP = addr.String()
 	}
 
 	// TODO(egtann) Should these extra scopes be allowed be a hardcoded
