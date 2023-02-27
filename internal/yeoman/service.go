@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net"
 	"net/http"
@@ -191,8 +192,12 @@ func getStatsWithIP(
 	var data struct {
 		Load float64 `json:"load"`
 	}
-	if err := json.NewDecoder(rsp.Body).Decode(&data); err != nil {
-		return zero, fmt.Errorf("decode: %w", err)
+	byt, err := io.ReadAll(rsp.Body)
+	if err != nil {
+		return zero, fmt.Errorf("read all: %w", err)
+	}
+	if err := json.Unmarshal(byt, &data); err != nil {
+		return zero, fmt.Errorf("decode: %s: %w", string(byt), err)
 	}
 	return stats{healthy: true, load: data.Load}, nil
 }
@@ -217,8 +222,7 @@ func (s *service) pollUntilHealthy(
 			// loop on unrecoverable errors.
 		}
 
-		// Cancel early if the service has since been
-		// redeployed.
+		// Cancel early if the service has since been redeployed.
 		if originalOpts.UpdatedAt != s.opts.UpdatedAt {
 			s.log.Info("canceling for new deploy")
 			cancel(newDeployErr)
