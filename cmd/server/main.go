@@ -131,25 +131,22 @@ func run() error {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if err := server.ServeBackground(ctx); err != nil {
-		// Treat our deliberate shutdown as a success
-		if errors.Is(err, context.Canceled) {
-			return nil
-		}
-		return fmt.Errorf("server start: %w", err)
-	}
 
 	// Handle shutdowns gracefully.
 	go func() {
 		shutdown := make(chan os.Signal, 1)
 		signal.Notify(shutdown, syscall.SIGINT, syscall.SIGTERM)
 		<-shutdown
+		log.Info("shutting down...")
 		cancel()
 	}()
 
-	// Hang on the main thread until the graceful shutdown logic executes
-	// above.
-	<-ctx.Done()
-	log.Info("shutting down...")
+	if err := server.Serve(ctx); err != nil {
+		// Treat our deliberate shutdown as a success
+		if errors.Is(err, context.Canceled) {
+			return nil
+		}
+		return fmt.Errorf("server start: %w", err)
+	}
 	return nil
 }

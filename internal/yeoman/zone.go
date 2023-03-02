@@ -154,12 +154,12 @@ func (r *reaper) Serve(ctx context.Context) error {
 	reap := func() error {
 		r.log.Debug("adding and reaping services")
 
-		opts := r.zone.providerRegion.server.copyServices()
+		services := r.zone.providerRegion.server.services()
 
 		// Any services which are in r.zone.serviceShutdownToken
 		// but no longer in opts were removed. We should delete them.
-		newServiceSet := make(map[string]struct{}, len(opts))
-		for _, opt := range opts {
+		newServiceSet := make(map[string]struct{}, len(services.s))
+		for _, opt := range services.s {
 			newServiceSet[opt.Name] = struct{}{}
 		}
 		var toDelete []string
@@ -174,7 +174,7 @@ func (r *reaper) Serve(ctx context.Context) error {
 		}
 
 		// Start any new services
-		for _, opt := range opts {
+		for _, opt := range services.s {
 			if r.zone.hasService(opt.Name) {
 				// Update our opts in case they changed.
 				r.zone.updateService(opt)

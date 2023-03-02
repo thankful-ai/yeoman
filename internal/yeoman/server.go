@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 
+	"github.com/bobg/go-generics/parallel"
 	"github.com/thejerf/suture/v4"
 	"golang.org/x/exp/slog"
 )
@@ -17,9 +17,8 @@ type Server struct {
 	log          *slog.Logger
 	serviceStore ServiceStore
 
-	serviceOpts []ServiceOpts
-	serviceSet  map[string]ServiceOpts
-	serviceMu   sync.RWMutex
+	services    func() services
+	setServices func(services)
 
 	// TODO(egtann) revisit to make it possible to add providers after boot
 	// via the CLI?
@@ -56,7 +55,6 @@ func NewServer(ctx context.Context, opts ServerOpts) (*Server, error) {
 		log:          opts.Log,
 		serviceStore: opts.ServiceStore,
 		supervisor:   supervisor,
-		serviceSet:   map[string]ServiceOpts{},
 	}
 	s.providers = make([]*providerRegion, 0, len(opts.ProviderStores))
 	for cp, ipStore := range opts.ProviderStores {
@@ -86,28 +84,29 @@ func NewServer(ctx context.Context, opts ServerOpts) (*Server, error) {
 // * ProviderRegion monitors a single region, e.g. gcp:us-central1.
 // * Zone monitors a single zone, e.g. us-central1-b.
 // * Service represents one or more VMs, e.g. "dashboard".
-func (s *Server) ServeBackground(ctx context.Context) error {
+func (s *Server) Serve(ctx context.Context) error {
 	s.log.Info("starting server")
 
 	// Retrieve initial services before starting provider regions.
-	opts, err := s.serviceStore.GetServices(ctx)
+	set, err := s.serviceStore.GetServices(ctx)
 	if err != nil {
 		return fmt.Errorf("get services: %w", err)
 	}
-	for _, opt := range opts {
-		if err = s.addService(opt); err != nil {
-			return fmt.Errorf("add service: %w", err)
-		}
+	opts := make([]ServiceOpts, 0, len(set))
+	for _, o := range opts {
+		set[o.Name] = o
 	}
+	reader, writer, closer := parallel.Protect(services{
+		s: opts,
+		m: set,
+	})
+	s.services = reader
+	s.setServices = writer
+	defer closer()
 
-	errCh := s.supervisor.ServeBackground(ctx)
-	go func() {
-		for err := range errCh {
-			if err != nil {
-				s.log.Error("serve background", err)
-			}
-		}
-	}()
+	if err := s.supervisor.Serve(ctx); err != nil {
+		return fmt.Errorf("serve: %w", err)
+	}
 	return nil
 }
 
@@ -143,14 +142,13 @@ func (s *serviceScanner) Serve(ctx context.Context) error {
 		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 
-		s.log.Debug("got services")
 		newOpts, err := s.server.serviceStore.GetServices(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("get services: %w", err)
 		}
+		s.log.Debug("got services")
 
 		for _, opt := range newOpts {
-			s.log.Debug("add service", slog.String("name", opt.Name))
 			if err = s.server.addService(opt); err != nil {
 				return nil, fmt.Errorf("add service: %w", err)
 			}
@@ -186,53 +184,47 @@ func (s *serviceScanner) Serve(ctx context.Context) error {
 	}
 }
 
-func (s *Server) copyServices() []ServiceOpts {
-	s.serviceMu.RLock()
-	defer s.serviceMu.RUnlock()
-
-	return append([]ServiceOpts{}, s.serviceOpts...)
+func (s *Server) deleteServiceOpt(name string) {
+	ss := s.services()
+	delete(ss.m, name)
+	ss.s = make([]ServiceOpts, 0, len(ss.m))
+	for _, serviceOpt := range ss.m {
+		ss.s = append(ss.s, serviceOpt)
+	}
+	s.setServices(ss)
 }
 
-func (s *Server) deleteServiceOpt(name string) {
-	s.serviceMu.Lock()
-	defer s.serviceMu.Unlock()
-
-	delete(s.serviceSet, name)
-	services := make([]ServiceOpts, 0, len(s.serviceSet))
-	for _, service := range s.serviceSet {
-		services = append(services, service)
-	}
-	s.serviceOpts = services
+type services struct {
+	s []ServiceOpts
+	m map[string]ServiceOpts
 }
 
 func (s *Server) setServiceOpt(so ServiceOpts) {
-	s.serviceMu.Lock()
-	defer s.serviceMu.Unlock()
+	ss := s.services()
 
-	if _, exist := s.serviceSet[so.Name]; !exist {
+	if _, exist := ss.m[so.Name]; !exist {
 		// Add the service opt
-		s.serviceSet[so.Name] = so
-		s.serviceOpts = append(s.serviceOpts, so)
+		ss.m[so.Name] = so
+		ss.s = append(ss.s, so)
+		s.setServices(ss)
 		return
 	}
 
 	// Update the service opt
-	newOpts := make([]ServiceOpts, 0, len(s.serviceOpts))
-	for _, oldOpt := range s.serviceOpts {
+	newOpts := make([]ServiceOpts, 0, len(ss.s))
+	for _, oldOpt := range ss.s {
 		if oldOpt.Name == so.Name {
 			newOpts = append(newOpts, so)
 			continue
 		}
 		newOpts = append(newOpts, oldOpt)
 	}
-	s.serviceOpts = newOpts
-	s.serviceSet[so.Name] = so
+	ss.s = newOpts
+	ss.m[so.Name] = so
 }
 
 func (s *Server) getServiceOpt(name string) (ServiceOpts, bool) {
-	s.serviceMu.RLock()
-	defer s.serviceMu.RUnlock()
-
-	opts, ok := s.serviceSet[name]
-	return opts, ok
+	ss := s.services()
+	opt, ok := ss.m[name]
+	return opt, ok
 }
