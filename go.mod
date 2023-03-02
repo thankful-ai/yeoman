@@ -42,8 +42,10 @@ require (
 	github.com/mitchellh/go-homedir v1.1.0 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.0-rc2 // indirect
+	github.com/petermattis/goid v0.0.0-20230222173705-8ff7bb262a50 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/rogpeppe/go-internal v1.9.0 // indirect
+	github.com/sasha-s/go-deadlock v0.3.1 // indirect
 	github.com/sirupsen/logrus v1.9.0 // indirect
 	github.com/sourcegraph/sourcegraph/lib v0.0.0-20230223154233-dc9d3700971c // indirect
 	github.com/vbatts/tar-split v0.11.2 // indirect

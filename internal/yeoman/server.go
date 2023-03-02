@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/bobg/go-generics/parallel"
+	"github.com/sasha-s/go-deadlock"
 	"github.com/thejerf/suture/v4"
 	"golang.org/x/exp/slog"
 )
@@ -17,8 +17,8 @@ type Server struct {
 	log          *slog.Logger
 	serviceStore ServiceStore
 
-	services    func() services
-	setServices func(services)
+	services   map[string]ServiceOpts
+	servicesMu deadlock.RWMutex
 
 	// TODO(egtann) revisit to make it possible to add providers after boot
 	// via the CLI?
@@ -92,17 +92,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("get services: %w", err)
 	}
-	opts := make([]ServiceOpts, 0, len(set))
-	for _, o := range opts {
-		set[o.Name] = o
-	}
-	reader, writer, closer := parallel.Protect(services{
-		s: opts,
-		m: set,
-	})
-	s.services = reader
-	s.setServices = writer
-	defer closer()
+	s.services = set
 
 	if err := s.supervisor.Serve(ctx); err != nil {
 		return fmt.Errorf("serve: %w", err)
@@ -185,46 +175,41 @@ func (s *serviceScanner) Serve(ctx context.Context) error {
 }
 
 func (s *Server) deleteServiceOpt(name string) {
-	ss := s.services()
-	delete(ss.m, name)
-	ss.s = make([]ServiceOpts, 0, len(ss.m))
-	for _, serviceOpt := range ss.m {
-		ss.s = append(ss.s, serviceOpt)
-	}
-	s.setServices(ss)
-}
+	s.servicesMu.Lock()
+	defer s.servicesMu.Unlock()
 
-type services struct {
-	s []ServiceOpts
-	m map[string]ServiceOpts
+	delete(s.services, name)
 }
 
 func (s *Server) setServiceOpt(so ServiceOpts) {
-	ss := s.services()
+	s.servicesMu.Lock()
+	defer s.servicesMu.Unlock()
 
-	if _, exist := ss.m[so.Name]; !exist {
+	if _, exist := s.services[so.Name]; !exist {
 		// Add the service opt
-		ss.m[so.Name] = so
-		ss.s = append(ss.s, so)
-		s.setServices(ss)
+		s.services[so.Name] = so
 		return
 	}
 
 	// Update the service opt
-	newOpts := make([]ServiceOpts, 0, len(ss.s))
-	for _, oldOpt := range ss.s {
-		if oldOpt.Name == so.Name {
-			newOpts = append(newOpts, so)
-			continue
-		}
-		newOpts = append(newOpts, oldOpt)
-	}
-	ss.s = newOpts
-	ss.m[so.Name] = so
+	s.services[so.Name] = so
 }
 
 func (s *Server) getServiceOpt(name string) (ServiceOpts, bool) {
-	ss := s.services()
-	opt, ok := ss.m[name]
+	s.servicesMu.RLock()
+	defer s.servicesMu.RUnlock()
+
+	opt, ok := s.services[name]
 	return opt, ok
+}
+
+func (s *Server) copyServices() map[string]ServiceOpts {
+	s.servicesMu.RLock()
+	defer s.servicesMu.RUnlock()
+
+	out := make(map[string]ServiceOpts, len(s.services))
+	for _, o := range s.services {
+		out[o.Name] = o
+	}
+	return out
 }
