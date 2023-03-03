@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
+	"github.com/sasha-s/go-deadlock"
 	"github.com/sourcegraph/conc/pool"
 	"github.com/thejerf/suture/v4"
 	"golang.org/x/exp/slog"
@@ -24,10 +24,10 @@ type zone struct {
 	// serviceShutdownToken mapping service names to shutdown tokens.
 	serviceShutdownToken map[string]suture.ServiceToken
 	services             map[string]*service
-	servicesMu           sync.RWMutex
+	servicesMu           deadlock.RWMutex
 
 	vms   []vmState
-	vmsMu sync.RWMutex
+	vmsMu deadlock.RWMutex
 
 	// supervisor to manage services.
 	supervisor *suture.Supervisor

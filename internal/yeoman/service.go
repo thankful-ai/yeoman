@@ -13,9 +13,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
+	"github.com/sasha-s/go-deadlock"
 	"github.com/sourcegraph/conc/pool"
 	"github.com/thejerf/suture/v4"
 	"golang.org/x/exp/slog"
@@ -301,7 +301,7 @@ func (s *service) createStaticIPs(
 
 	// Create and append
 	if len(ipIDs) > 0 {
-		var mu sync.Mutex
+		var mu deadlock.Mutex
 		p := pool.New().WithErrors()
 		for _, id := range ipIDs {
 			id := id

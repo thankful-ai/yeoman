@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 
+	"github.com/sasha-s/go-deadlock"
 	"github.com/thejerf/suture/v4"
 	"golang.org/x/exp/slog"
 )
@@ -23,7 +23,7 @@ type providerRegion struct {
 	// Multiple services creating IPs simultaneously results in conflicts.
 	// We need to lock access while fetching and creating IPs.
 	ipStore   IPStore
-	ipStoreMu sync.Mutex
+	ipStoreMu deadlock.Mutex
 
 	// supervisor to manage services.
 	supervisor *suture.Supervisor
