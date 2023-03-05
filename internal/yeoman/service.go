@@ -369,6 +369,10 @@ func (s *service) startupVMs(
 			// Multiple services creating IPs simultaneously
 			// results in conflicts. We need to lock access while
 			// fetching and creating IPs.
+			//
+			// TODO(egtann) We can use separate locks per service on
+			// the providerRegion to enable multiple services to be
+			// adjusted at the same time.
 			s.zone.providerRegion.ipStoreMu.Lock()
 			defer s.zone.providerRegion.ipStoreMu.Unlock()
 
@@ -757,17 +761,17 @@ func (c *checker) Serve(ctx context.Context) error {
 
 			// If we have at most 1 service, we need to startup the
 			// new box with a blue-green strategy before we can
-			// reboot the old to reduce downtime.
+			// shutdown the old to reduce downtime.
 			if len(vms) <= 1 {
-				err := c.service.startupVMs(ctx, opts, toStart,
-					vmsFromStates(vms))
+				err := c.service.startupVMs(ctx, opts,
+					opts.Count, vmsFromStates(vms))
 				if err != nil {
 					return fmt.Errorf("startup vms: %w", err)
 				}
-				err = c.reboot(ctx, vms)
+				err = c.service.teardownVMs(ctx,
+					vmsFromStates(vms))
 				if err != nil {
-					return fmt.Errorf("reboot: %w",
-						err)
+					return fmt.Errorf("teardown vms: %w", err)
 				}
 				c.lastReboot = time.Now()
 				return nil
