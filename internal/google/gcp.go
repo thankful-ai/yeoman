@@ -80,6 +80,11 @@ func (g *GCP) GetAllVMs(
 	for _, v := range data.Items {
 		vm, err := vmFromGoogle(v)
 		if err != nil {
+			if strings.HasSuffix(err.Error(), "unable to parse IP") {
+				// This happens when a VM is first created.
+				// Ignore it until an IP is assigned to it.
+				continue
+			}
 			return nil, fmt.Errorf("vm from google: %w", err)
 		}
 		vms = append(vms, vm)

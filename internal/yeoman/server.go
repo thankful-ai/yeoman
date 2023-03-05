@@ -108,12 +108,16 @@ type serviceScanner struct {
 func (s *Server) addService(opt ServiceOpts) error {
 	oldOpts, exist := s.getServiceOpt(opt.Name)
 	if !exist {
+		s.log.Debug("create service",
+			slog.String("name", opt.Name))
 		s.setServiceOpt(opt)
 		return nil
 	}
 	if opt == oldOpts {
 		return nil
 	}
+	s.log.Debug("update service",
+		slog.String("name", opt.Name))
 	s.setServiceOpt(opt)
 	return nil
 }
@@ -136,7 +140,12 @@ func (s *serviceScanner) Serve(ctx context.Context) error {
 		if err != nil {
 			return nil, fmt.Errorf("get services: %w", err)
 		}
-		s.log.Debug("got services")
+		names := make([]string, 0, len(newOpts))
+		for _, o := range newOpts {
+			names = append(names, o.Name)
+		}
+		s.log.Debug("got services",
+			slog.String("names", fmt.Sprintf("%v", names)))
 
 		for _, opt := range newOpts {
 			if err = s.server.addService(opt); err != nil {
