@@ -37,26 +37,34 @@ type service struct {
 }
 
 // changedMachine reports whether the underlying VM needs to be adjusted (e.g.
-// changing the CPU or the harddrive capacity). True indicates that restarting
-// the VM is not sufficient to reach the desired state, and instead we'll need
-// to delete and recreate it with the new specs.
+// changing the CPU or the harddrive capacity). Any non-nil response indicates
+// that restarting the VM is not sufficient to reach the desired state, and
+// instead we'll need to delete and recreate it with the new specs.
 //
 // Any difference in counts are ignored here, since restarting would not affect
 // this. The checker is responsible for adjusting for counts.
-func changedMachine(o1, o2 ServiceOpts) bool {
+func changedMachine(o1, o2 ServiceOpts) *string {
 	if o1.MachineType != o2.MachineType {
-		return true
+		s := fmt.Sprintf("new machine type: %s->%s", o1.MachineType,
+			o2.MachineType)
+		return &s
 	}
 	if o1.DiskSizeGB != o2.DiskSizeGB {
-		return true
+		s := fmt.Sprintf("new disk size: %d->%d", o1.DiskSizeGB,
+			o2.DiskSizeGB)
+		return &s
 	}
 	if o1.AllowHTTP != o2.AllowHTTP {
-		return true
+		s := fmt.Sprintf("new allow http: %t->%t", o1.AllowHTTP,
+			o2.AllowHTTP)
+		return &s
 	}
 	if o1.StaticIP != o2.StaticIP {
-		return true
+		s := fmt.Sprintf("new static ip: %t->%t", o1.StaticIP,
+			o2.StaticIP)
+		return &s
 	}
-	return false
+	return nil
 }
 
 func (s *service) getVMs() []vmState {
@@ -450,10 +458,10 @@ func (s *service) startupVMs(
 	ctx, deployCancel := context.WithCancelCause(ctx)
 	defer deployCancel(nil)
 
-	errPool := pool.New().WithErrors().WithContext(ctx)
+	errPool := pool.New().WithErrors()
 	for _, vm := range vms {
 		vm := vm
-		errPool.Go(func(ctx context.Context) error {
+		errPool.Go(func() error {
 			err := s.pollUntilHealthy(ctx, vm, opts, deployCancel)
 			if err != nil {
 				return fmt.Errorf("poll until healthy: %w",
@@ -662,14 +670,12 @@ func (c *checker) Serve(ctx context.Context) error {
 
 	checkCount := func(vms []vmState) error {
 		if opts.Count == len(vms) {
+			c.log.Debug("skip check count",
+				slog.Int("count", opts.Count))
 			return nil
 		}
 
 		if opts.Count < len(vms) {
-			c.log.Info("too many vms, tearing down",
-				slog.Int("want", opts.Count),
-				slog.Int("have", len(vms)))
-
 			// Tear down the difference. Always prioritize removing
 			// unhealthy VMs and those with the lowest load before
 			// any others.
@@ -677,21 +683,34 @@ func (c *checker) Serve(ctx context.Context) error {
 
 			toDelete := len(vms) - opts.Count
 			toDeleteVMs := make([]VM, 0, toDelete)
+			toDeleteNames := make([]string, 0, toDelete)
 			for i := 0; i < toDelete; i++ {
 				toDeleteVMs = append(toDeleteVMs, vms[i].vm)
+				toDeleteNames = append(toDeleteNames,
+					vms[i].vm.Name)
 			}
+
+			c.log.Info("starting adjustment",
+				slog.String("strategy", "teardown"),
+				slog.String("reason", "too many vms"),
+				slog.String("deleting", fmt.Sprint(toDeleteNames)),
+				slog.Int("want", opts.Count),
+				slog.Int("have", len(vms)))
 			err := c.service.teardownVMs(ctx, toDeleteVMs)
 			if err != nil {
 				return fmt.Errorf("destroy: teardown vms: %w",
 					err)
 			}
+			c.log.Info("finished adjustment")
+
 			return nil
 		}
 
-		c.log.Info("too few vms, creating",
+		c.log.Info("starting adjustment",
+			slog.String("strategy", "startup"),
+			slog.String("reason", "too many vms"),
 			slog.Int("want", opts.Count),
 			slog.Int("have", len(vms)))
-
 		toCreate := opts.Count - len(vms)
 		tfVMs := make([]VM, 0, toCreate)
 		for _, vm := range vms {
@@ -702,6 +721,7 @@ func (c *checker) Serve(ctx context.Context) error {
 			return fmt.Errorf("create: startup vms: %w",
 				err)
 		}
+		c.log.Info("finished adjustment")
 		return nil
 	}
 
@@ -737,15 +757,19 @@ func (c *checker) Serve(ctx context.Context) error {
 		// size, etc. Note that IP addresses will change, and DNS
 		// records may need to be updated by hand for any AllowHTTP
 		// services.
-		if changedMachine(opts, newOpts) {
+		if change := changedMachine(opts, newOpts); change != nil {
 			// If we changed the machine, we want to startup our
 			// target number, then tear all existing down.
+			c.log.Info("starting deploy",
+				slog.String("strategy", "recreate"),
+				slog.String("reason", fmt.Sprintf("changed machine: %s", *change)))
 			err := c.recreate(ctx, vmsFromStates(vms), newOpts)
 			if err != nil {
 				return fmt.Errorf("recreate: %w", err)
 			}
 			opts = newOpts
 			c.lastReboot = time.Now()
+			c.log.Info("finished deploy")
 			return nil
 		}
 
@@ -759,10 +783,15 @@ func (c *checker) Serve(ctx context.Context) error {
 		if opts.Count >= len(vms) {
 			toStart := opts.Count - len(vms)
 
-			// If we have at most 1 service, we need to startup the
-			// new box with a blue-green strategy before we can
+			// If we have at most 1 VM, we need to startup the new
+			// box with a blue-green strategy before we can
 			// shutdown the old to reduce downtime.
 			if len(vms) <= 1 {
+				c.log.Info("starting deploy",
+					slog.String("strategy", "blue-green"),
+					slog.String("reason", "have 0 or 1 vm"),
+					slog.Int("have", len(vms)),
+					slog.Int("want", opts.Count))
 				err := c.service.startupVMs(ctx, opts,
 					opts.Count, vmsFromStates(vms))
 				if err != nil {
@@ -774,6 +803,7 @@ func (c *checker) Serve(ctx context.Context) error {
 					return fmt.Errorf("teardown vms: %w", err)
 				}
 				c.lastReboot = time.Now()
+				c.log.Info("finished deploy")
 				return nil
 			}
 
@@ -782,6 +812,9 @@ func (c *checker) Serve(ctx context.Context) error {
 			// at the same time, reducing deploy time. This is a
 			// very common codepath for deploys, so it makes sense
 			// to optimize for speed.
+			c.log.Info("starting deploy",
+				slog.String("strategy", "simultaneous startup reboot"),
+				slog.String("reason", "have 2 or more vms"))
 			p := pool.New().WithErrors()
 			p.Go(func() error {
 				err := c.service.startupVMs(ctx, opts, toStart,
@@ -802,7 +835,7 @@ func (c *checker) Serve(ctx context.Context) error {
 			if err := p.Wait(); err != nil {
 				return fmt.Errorf("wait: %w", err)
 			}
-			c.lastReboot = time.Now()
+			c.log.Info("finished deploy")
 			return nil
 		}
 
@@ -814,7 +847,20 @@ func (c *checker) Serve(ctx context.Context) error {
 		// This can be done simultaneously if len(keep) > 1 without any
 		// downtime.
 		keep, remove := vms[:opts.Count], vms[opts.Count:]
+		rebootNames := make([]string, 0, len(keep))
+		for _, vm := range keep {
+			rebootNames = append(rebootNames, vm.vm.Name)
+		}
+		teardownNames := make([]string, 0, len(remove))
+		for _, vm := range remove {
+			teardownNames = append(teardownNames, vm.vm.Name)
+		}
 		if len(keep) <= 1 {
+			c.log.Info("starting deploy",
+				slog.String("strategy", "reboot then teardown"),
+				slog.String("reason", "keeping 0 or 1 vm"),
+				slog.String("reboot", fmt.Sprint(rebootNames)),
+				slog.String("teardown", fmt.Sprint(teardownNames)))
 			if err := c.reboot(ctx, keep); err != nil {
 				return fmt.Errorf("reboot: %w", err)
 			}
@@ -824,11 +870,17 @@ func (c *checker) Serve(ctx context.Context) error {
 				return fmt.Errorf("teardown vms: %w", err)
 			}
 			c.lastReboot = time.Now()
+			c.log.Debug("finished deploy")
 			return nil
 		}
 
 		// We have at least 2 servers we're going to keep, so we can
 		// reboot and teardown at the same time to speed up deploys.
+		c.log.Info("starting deploy",
+			slog.String("strategy", "simultaneous reboot teardown"),
+			slog.String("reason", "keeping at least two servers"),
+			slog.String("reboot", fmt.Sprint(rebootNames)),
+			slog.String("teardown", fmt.Sprint(teardownNames)))
 		p := pool.New().WithErrors()
 		p.Go(func() error {
 			if err := c.reboot(ctx, keep); err != nil {
@@ -848,20 +900,29 @@ func (c *checker) Serve(ctx context.Context) error {
 			return fmt.Errorf("wait: %w", err)
 		}
 		c.lastReboot = time.Now()
+		c.log.Info("finished deploy")
 		return nil
 	}
 
+	const delay = 6 * time.Second
 	for {
 		if err := check(); err != nil {
 			// Record in memory that this deploy was bad, so we
 			// don't try to reapply it every iteration of the loop.
 			c.badDeployUpdatedAt = &c.service.opts.UpdatedAt
-			return fmt.Errorf("check: %w", err)
+			err = fmt.Errorf("check: %w", err)
+			c.log.Error("failed deploy or adjustment", err)
+			select {
+			case <-time.After(delay):
+				continue
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		}
-		c.badDeployUpdatedAt = nil
 
+		c.badDeployUpdatedAt = nil
 		select {
-		case <-time.After(6 * time.Second):
+		case <-time.After(delay):
 			continue
 		case <-ctx.Done():
 			return ctx.Err()

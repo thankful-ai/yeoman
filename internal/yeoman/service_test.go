@@ -145,28 +145,29 @@ func TestChangedMachine(t *testing.T) {
 
 	type testcase struct {
 		have [2]ServiceOpts
-		want bool
+		want *string
 	}
+	p := func(s string) *string { return &s }
 	tcs := map[string]testcase{
 		"static ip": testcase{
 			have: [2]ServiceOpts{{StaticIP: true}, {}},
-			want: true,
+			want: p("new static ip: true->false"),
 		},
 		"allow http": testcase{
 			have: [2]ServiceOpts{{AllowHTTP: true}, {}},
-			want: true,
+			want: p("new allow http: true->false"),
 		},
 		"disk size": testcase{
 			have: [2]ServiceOpts{{DiskSizeGB: 1}, {}},
-			want: true,
+			want: p("new disk size: 1->0"),
 		},
 		"machine type": testcase{
 			have: [2]ServiceOpts{{MachineType: "x"}, {}},
-			want: true,
+			want: p("new machine type: x->"),
 		},
 		"equal": testcase{
 			have: [2]ServiceOpts{{}, {}},
-			want: false,
+			want: nil,
 		},
 	}
 	for name, tc := range tcs {
@@ -174,8 +175,17 @@ func TestChangedMachine(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			got := changedMachine(tc.have[0], tc.have[1])
-			if tc.want != got {
-				t.Fatalf("want %t, got %t", tc.want, got)
+			if tc.want == nil && got != nil {
+				t.Fatal("want nil")
+			}
+			if tc.want != nil && got == nil {
+				t.Fatal("want not nil")
+			}
+			if tc.want == nil && got == nil {
+				return
+			}
+			if *tc.want != *got {
+				t.Fatalf("want %s, got %s", *tc.want, *got)
 			}
 		})
 	}
