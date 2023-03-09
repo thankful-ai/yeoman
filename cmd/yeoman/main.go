@@ -50,12 +50,13 @@ func run() error {
 	diskSizeGB := flag.Int("disk", 10, "disk size in GB")
 	allowHTTP := flag.Bool("http", false, "allow http")
 	staticIP := flag.Bool("static-ip", false, "use a static ip")
+	debug := flag.Bool("debug", false, "use a debug image with a shell")
 	flag.Parse()
 
 	arg, tail := parseArg(flag.Args())
 	switch arg {
 	case "init":
-		return initYeoman(tail, *configPath)
+		return initYeoman(tail, *configPath, *debug)
 	case "service":
 		return service(tail, serviceOpts{
 			configPath:  *configPath,
@@ -64,6 +65,7 @@ func run() error {
 			diskSizeGB:  *diskSizeGB,
 			allowHTTP:   *allowHTTP,
 			staticIP:    *staticIP,
+			debug:       *debug,
 		})
 	case "version":
 		fmt.Println("v0.0.0-alpha")
@@ -75,7 +77,7 @@ func run() error {
 	}
 }
 
-func initYeoman(args []string, configPath string) error {
+func initYeoman(args []string, configPath string, debug bool) error {
 	if len(args) != 0 {
 		return errors.New("unknown arguments")
 	}
@@ -113,7 +115,7 @@ func initYeoman(args []string, configPath string) error {
 		Cmd:  []string{"/app/yeoman"},
 		Env:  []string{},
 	}
-	err = buildImageWithConf(conf, appConf, "/tmp", "yeoman")
+	err = buildImageWithConf(conf, appConf, "/tmp", "yeoman", debug)
 	if err != nil {
 		return fmt.Errorf("build image: %w", err)
 	}
@@ -207,13 +209,13 @@ type serviceOpts struct {
 	diskSizeGB  int
 	allowHTTP   bool
 	staticIP    bool
+	debug       bool
 }
 
 func service(args []string, opts serviceOpts) error {
 	arg, tail := parseArg(args)
 	switch arg {
 	case "deploy":
-		// Notifies the service over API.
 		return deployService(tail, opts)
 	case "list":
 		return listServices(opts)
@@ -243,7 +245,7 @@ func deployService(args []string, opts serviceOpts) error {
 		return fmt.Errorf("parse config: %w", err)
 	}
 
-	err = buildImage(conf, arg)
+	err = buildImage(conf, arg, opts.debug)
 	if err != nil {
 		return fmt.Errorf("build image: %w", err)
 	}
@@ -399,23 +401,29 @@ func buildImageWithConf(
 	conf yeoman.Config,
 	appConf appConfig,
 	dirName, serviceName string,
+	debug bool,
 ) error {
 	// These images come from:
 	// https://github.com/GoogleContainerTools/distroless#docker.
 	var base string
 	switch appConf.Type {
 	case golang:
-		base = "gcr.io/distroless/static:latest"
+		base = "gcr.io/distroless/static"
 	case python3:
-		base = "gcr.io/distroless/python3:latest"
+		base = "gcr.io/distroless/python3"
 	case java:
-		base = "gcr.io/distroless/java17:latest"
+		base = "gcr.io/distroless/java17"
 	case rust, d, cgo:
-		base = "gcr.io/distroless/base:latest"
+		base = "gcr.io/distroless/base"
 	case node:
-		base = "gcr.io/distroless/nodejs18:latest"
+		base = "gcr.io/distroless/nodejs18"
 	default:
 		return fmt.Errorf("unsupported app type: %s", appConf.Type)
+	}
+	if debug {
+		base = fmt.Sprintf("%s:debug", base)
+	} else {
+		base = fmt.Sprintf("%s:latest", base)
 	}
 	fmt.Println("building on", base)
 	img, err := crane.Pull(base)
@@ -461,6 +469,7 @@ func buildImageWithConf(
 func buildImage(
 	conf yeoman.Config,
 	serviceName string,
+	debug bool,
 ) error {
 	appConfigPath := filepath.Join(serviceName, yeoman.AppConfigName)
 
@@ -472,7 +481,7 @@ func buildImage(
 	if err := json.Unmarshal(byt, &appConf); err != nil {
 		return fmt.Errorf("unmarshal: %w", err)
 	}
-	err = buildImageWithConf(conf, appConf, ".", serviceName)
+	err = buildImageWithConf(conf, appConf, ".", serviceName, debug)
 	if err != nil {
 		return fmt.Errorf("build image with conf: %w", err)
 	}
