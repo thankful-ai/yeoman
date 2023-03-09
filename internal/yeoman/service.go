@@ -737,9 +737,13 @@ func (c *checker) Serve(ctx context.Context) error {
 			return nil
 		}
 
-		// Check if we need to reboot because our service was deployed
-		// or for security reasons (kernel/OS updates).
+		// Check if we need to reboot for security reasons (kernel/OS
+		// updates). This is done on a best-effort basis, so we log the
+		// reboot as having happened before the reboot starts. This way
+		// it doesn't keep trying to reboot forever if healthchecks
+		// fail.
 		if opts == newOpts && !c.lastReboot.Before(time.Now().Add(-24*time.Hour)) {
+			c.lastReboot = time.Now()
 			err := checkCount(vms)
 			if err != nil {
 				return fmt.Errorf("check count: %w", err)
