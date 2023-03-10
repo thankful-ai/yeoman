@@ -99,8 +99,8 @@ func newService(
 	})
 
 	// Processes to monitor:
-	// - checker: Confirm num of servers are within bounds, rebooted every
-	//            24 hours for security updates and after any deploys. It's
+	// - checker: Confirm num of VMs are within bounds, rebooted every 24
+	//            hours for security updates and after any deploys. It's
 	//            very important that all changes to the VMs within this
 	//            service happen on a single goroutine, and thus it's not
 	//            possible to run into logical race conditions like
@@ -365,9 +365,9 @@ func (s *service) startupVMs(
 		ids = append(ids, id)
 	}
 
-	// If we're going to create servers, we'll need IPs. Get
-	// already-provisioned static IPs. If we don't have enough, we'll need
-	// to provision new ones and set placeholders for now.
+	// If we're going to create VMs, we'll need IPs. Get already-provisioned
+	// static IPs. If we don't have enough, we'll need to provision new ones
+	// and set placeholders for now.
 	var availExtIPs, availIntIPs []IP
 	if s.opts.StaticIP {
 		createIPs := func() error {
@@ -737,13 +737,15 @@ func (c *checker) Serve(ctx context.Context) error {
 			return nil
 		}
 
-		// Check if we need to reboot for security reasons (kernel/OS
-		// updates). This is done on a best-effort basis, so we log the
-		// reboot as having happened before the reboot starts. This way
-		// it doesn't keep trying to reboot forever if healthchecks
-		// fail.
-		if opts == newOpts && !c.lastReboot.Before(time.Now().Add(-24*time.Hour)) {
-			c.lastReboot = time.Now()
+		// Check if we need to reboot for security reasons
+		// (kernel/OS updates).
+		yesterday := time.Now().Add(-24 * time.Hour)
+		needSecurityUpdate := c.lastReboot.Before(yesterday)
+
+		// If the service hasn't been newly deployed, and we're not
+		// applying a security update, then check to confirm we have the
+		// correct number of VMs.
+		if opts == newOpts && !needSecurityUpdate {
 			err := checkCount(vms)
 			if err != nil {
 				return fmt.Errorf("check count: %w", err)
@@ -754,6 +756,12 @@ func (c *checker) Serve(ctx context.Context) error {
 		// If we're here, our service has changed in some way, or we're
 		// rebooting to apply security updates.
 		//
+		// Security reboots are done on a best-effort basis, so we log
+		// the reboot as having happened before any reboot starts. This
+		// way it doesn't keep trying to reboot forever if healthchecks
+		// fail.
+		c.lastReboot = time.Now()
+
 		// If the machine itself has changed, then we need to attempt a
 		// zero-downtime update. We'll boot the new VMs, then tear down
 		// the old in a blue-green strategy. We can't actually restart
@@ -772,17 +780,17 @@ func (c *checker) Serve(ctx context.Context) error {
 				return fmt.Errorf("recreate: %w", err)
 			}
 			opts = newOpts
-			c.lastReboot = time.Now()
 			c.log.Info("finished deploy")
 			return nil
 		}
 
 		// Our machine didn't change, so we'll want to reboot existing
-		// servers, and then create or destroy as needed once we're
-		// sure the reboots worked.
+		// VMs, and then create or destroy as needed once we're sure the
+		// reboots worked.
 
 		// If we want more VMs than we have, create the new ones, then
-		// reboot all the existing ones.
+		// reboot all the existing ones. This codepath also runs to
+		// apply security updates on a timer.
 		opts = newOpts
 		if opts.Count >= len(vms) {
 			toStart := opts.Count - len(vms)
@@ -806,7 +814,6 @@ func (c *checker) Serve(ctx context.Context) error {
 				if err != nil {
 					return fmt.Errorf("teardown vms: %w", err)
 				}
-				c.lastReboot = time.Now()
 				c.log.Info("finished deploy")
 				return nil
 			}
@@ -873,16 +880,15 @@ func (c *checker) Serve(ctx context.Context) error {
 			if err != nil {
 				return fmt.Errorf("teardown vms: %w", err)
 			}
-			c.lastReboot = time.Now()
 			c.log.Debug("finished deploy")
 			return nil
 		}
 
-		// We have at least 2 servers we're going to keep, so we can
-		// reboot and teardown at the same time to speed up deploys.
+		// We have at least 2 VMs we're going to keep, so we can reboot
+		// and teardown at the same time to speed up deploys.
 		c.log.Info("starting deploy",
 			slog.String("strategy", "simultaneous reboot teardown"),
-			slog.String("reason", "keeping at least two servers"),
+			slog.String("reason", "keeping at least two vms"),
 			slog.String("reboot", fmt.Sprint(rebootNames)),
 			slog.String("teardown", fmt.Sprint(teardownNames)))
 		p := pool.New().WithErrors()
@@ -903,7 +909,6 @@ func (c *checker) Serve(ctx context.Context) error {
 		if err := p.Wait(); err != nil {
 			return fmt.Errorf("wait: %w", err)
 		}
-		c.lastReboot = time.Now()
 		c.log.Info("finished deploy")
 		return nil
 	}
