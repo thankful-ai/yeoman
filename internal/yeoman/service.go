@@ -585,17 +585,15 @@ func (c *checker) reboot(ctx context.Context, vms []vmState) error {
 	c.log.Debug("rebooting vms")
 
 	vmSet := make(map[string]VM, len(vms))
-	names := make([]string, 0, len(vms))
 	for _, vm := range vms {
 		vmSet[vm.vm.Name] = vm.vm
-		names = append(names, vm.vm.Name)
 	}
 
 	// Get the original opts, so we know if any deploys happen after this
 	// point.
 	opts := c.service.opts
 
-	restartBatch := func(nameBatch []string) error {
+	restartBatch := func(vmBatch []vmState) error {
 		// Allow 5 minutes to receive a healthy response before timing
 		// out.
 		ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
@@ -606,20 +604,25 @@ func (c *checker) reboot(ctx context.Context, vms []vmState) error {
 		ctx, deployCancel := context.WithCancelCause(ctx)
 		defer deployCancel(nil)
 
-		c.log.Info("restarting batch", slog.Any("batch", nameBatch))
+		names := make([]string, 0, len(vmBatch))
+		for _, vm := range vmBatch {
+			names = append(names, vm.vm.Name)
+		}
+
+		c.log.Info("restarting batch", slog.Any("batch", names))
 
 		p := pool.New().WithErrors()
-		for _, name := range nameBatch {
-			name := name
+		for _, vm := range vms {
+			vm := vm
 			p.Go(func() error {
 				err := c.service.zone.vmStore.RestartVM(ctx,
-					c.service.log, name)
+					c.service.log, vm.vm)
 				if err != nil {
 					return fmt.Errorf("restart vm %s: %w",
-						name, err)
+						vm.vm.Name, err)
 				}
 				err = c.service.pollUntilHealthy(ctx,
-					vmSet[name], opts, deployCancel)
+					vmSet[vm.vm.Name], opts, deployCancel)
 				if err != nil {
 					return fmt.Errorf("poll until healthy: %w",
 						err)
@@ -633,9 +636,16 @@ func (c *checker) reboot(ctx context.Context, vms []vmState) error {
 		return nil
 	}
 
-	for _, nameBatch := range makeBatches(names) {
-		if err := restartBatch(nameBatch); err != nil {
+	batches := makeBatches(vms)
+	for i, vmBatch := range batches {
+		if err := restartBatch(vmBatch); err != nil {
 			return fmt.Errorf("restart batch: %w", err)
+		}
+
+		// Give 5 seconds for reverse proxies to pick up the
+		// now-available services before restarting the next batch.
+		if i+1 < len(batches) {
+			time.Sleep(5 * time.Second)
 		}
 	}
 	return nil
@@ -672,6 +682,50 @@ func (c *checker) Serve(ctx context.Context) error {
 		if opts.Count == len(vms) {
 			c.log.Debug("skip check count",
 				slog.Int("count", opts.Count))
+			var toBoot []VM
+			for _, vm := range vms {
+				if vm.vm.Running {
+					continue
+				}
+				toBoot = append(toBoot, vm.vm)
+			}
+			if len(toBoot) == 0 {
+				return nil
+			}
+
+			// Allow 5 minutes to receive a healthy response before
+			// timing out.
+			ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+			defer cancel()
+
+			// Allow us to cancel any health checks if any new deploys happen.
+			ctx, deployCancel := context.WithCancelCause(ctx)
+			defer deployCancel(nil)
+
+			p := pool.New().WithErrors()
+			for _, vm := range toBoot {
+				vm := vm
+				p.Go(func() error {
+					err := c.service.zone.vmStore.RestartVM(
+						ctx, c.service.log, vm)
+					if err != nil {
+						return fmt.Errorf(
+							"restart vm %s: %w",
+							vm.Name, err)
+					}
+					err = c.service.pollUntilHealthy(ctx,
+						vm, opts, deployCancel)
+					if err != nil {
+						return fmt.Errorf(
+							"poll until healthy: %w",
+							err)
+					}
+					return nil
+				})
+			}
+			if err := p.Wait(); err != nil {
+				return fmt.Errorf("wait: %w", err)
+			}
 			return nil
 		}
 
@@ -947,11 +1001,11 @@ func vmsFromStates(vmStates []vmState) []VM {
 	return out
 }
 
-func makeBatches(items []string) [][]string {
+func makeBatches[T any](items []T) [][]T {
 	var (
-		out      = [][]string{}
+		out      = [][]T{}
 		perBatch = int(math.Floor(float64(len(items)) / 3.0))
-		next     []string
+		next     []T
 	)
 	if perBatch == 0 {
 		perBatch = 1
@@ -959,7 +1013,7 @@ func makeBatches(items []string) [][]string {
 	for i, item := range items {
 		if i > 0 && i%perBatch == 0 {
 			out = append(out, next)
-			next = []string{}
+			next = []T{}
 		}
 		next = append(next, item)
 	}

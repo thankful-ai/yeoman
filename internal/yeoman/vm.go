@@ -37,6 +37,10 @@ type VM struct {
 	// This is useful for reverse-proxy boxes that need to be exposed to
 	// the public internet.
 	AllowHTTP bool `json:"allowHTTP"`
+
+	// Running is true when the VM is live and false in all other
+	// circumstances.
+	Running bool `json:"running"`
 }
 
 type StaticVMIPs struct {
@@ -61,7 +65,7 @@ type VMStore interface {
 	CreateVM(context.Context, *slog.Logger, VM) error
 
 	// RestartVM. Hang until boot completes.
-	RestartVM(ctx context.Context, log *slog.Logger, name string) error
+	RestartVM(context.Context, *slog.Logger, VM) error
 }
 
 type MockVMStore struct{ vals []string }

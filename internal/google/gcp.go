@@ -192,30 +192,33 @@ func (g *GCP) DeleteVM(
 func (g *GCP) RestartVM(
 	ctx context.Context,
 	log *slog.Logger,
-	name string,
+	vm yeoman.VM,
 ) error {
-	log.Info("restarting vm", slog.String("name", name))
+	log.Info("restarting vm", slog.String("name", vm.Name))
 
-	path := fmt.Sprintf("/instances/%s/stop", name)
-	byt, err := g.do(ctx, log, http.MethodPost, path, nil)
-	if err != nil {
-		return fmt.Errorf("do %s: %w", path, err)
-	}
 	var respData struct {
 		SelfLink string `json:"selfLink"`
 	}
-	if err := json.Unmarshal(byt, &respData); err != nil {
-		log.Warn(string(byt), slog.String("func", "Restart (stop)"))
-		return fmt.Errorf("unmarshal: %w", err)
-	}
-	err = g.pollOperation(ctx, log, respData.SelfLink, name,
-		"restart (stopping)")
-	if err != nil {
-		return fmt.Errorf("poll operation: %w", err)
+	if vm.Running {
+		path := fmt.Sprintf("/instances/%s/stop", vm.Name)
+		byt, err := g.do(ctx, log, http.MethodPost, path, nil)
+		if err != nil {
+			return fmt.Errorf("do %s: %w", path, err)
+		}
+		if err := json.Unmarshal(byt, &respData); err != nil {
+			log.Warn(string(byt),
+				slog.String("func", "Restart (stop)"))
+			return fmt.Errorf("unmarshal: %w", err)
+		}
+		err = g.pollOperation(ctx, log, respData.SelfLink, vm.Name,
+			"restart (stopping)")
+		if err != nil {
+			return fmt.Errorf("poll operation: %w", err)
+		}
 	}
 
-	path = fmt.Sprintf("/instances/%s/start", name)
-	byt, err = g.do(ctx, log, http.MethodPost, path, nil)
+	path := fmt.Sprintf("/instances/%s/start", vm.Name)
+	byt, err := g.do(ctx, log, http.MethodPost, path, nil)
 	if err != nil {
 		return fmt.Errorf("do %s: %w", path, err)
 	}
@@ -223,13 +226,13 @@ func (g *GCP) RestartVM(
 		log.Warn(string(byt), slog.String("func", "Restart (start)"))
 		return fmt.Errorf("unmarshal: %w", err)
 	}
-	err = g.pollOperation(ctx, log, respData.SelfLink, name,
+	err = g.pollOperation(ctx, log, respData.SelfLink, vm.Name,
 		"restart (starting)")
 	if err != nil {
 		return fmt.Errorf("poll operation: %w", err)
 	}
 
-	log.Info("restarted vm", slog.String("name", name))
+	log.Info("restarted vm", slog.String("name", vm.Name))
 	return nil
 }
 
@@ -337,8 +340,6 @@ func (g *GCP) vmToGoogle(v yeoman.VM) (*vm, error) {
 	return googleVM, nil
 }
 
-// If we get any error from vmFromGoogle, it means the VM is bad and we should
-// delete and recreate!
 func vmFromGoogle(v *vm) (yeoman.VM, error) {
 	var zero yeoman.VM
 
@@ -446,6 +447,7 @@ func vmFromGoogle(v *vm) (yeoman.VM, error) {
 		IPs:         ips,
 		Tags:        tags,
 		AllowHTTP:   allowed >= 2,
+		Running:     v.Status == "RUNNING",
 	}, nil
 }
 
