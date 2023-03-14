@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -277,4 +278,34 @@ func log() (*slog.Logger, func()) {
 		}
 	}
 	return slog.New(slog.NewTextHandler(devnull)), closer
+}
+
+func TestMakeBatches(t *testing.T) {
+	t.Parallel()
+
+	type testcase struct {
+		want int
+		have []int
+	}
+	tcs := []testcase{
+		{want: 0, have: []int{}},
+		{want: 1, have: []int{0}},
+		{want: 2, have: []int{0, 0}},
+		{want: 3, have: []int{0, 0, 0}},
+		{want: 3, have: []int{0, 0, 0, 0}},
+		{want: 3, have: []int{0, 0, 0, 0, 0}},
+		{want: 3, have: []int{0, 0, 0, 0, 0, 0}},
+		{want: 3, have: []int{0, 0, 0, 0, 0, 0, 0}},
+	}
+	for _, tc := range tcs {
+		tc := tc
+		t.Run(strconv.Itoa(len(tc.have)), func(t *testing.T) {
+			t.Parallel()
+
+			got := makeBatches(tc.have)
+			if len(got) != tc.want {
+				t.Fatalf("want %d, got %d", tc.want, got)
+			}
+		})
+	}
 }

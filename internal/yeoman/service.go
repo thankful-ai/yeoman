@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net"
 	"net/http"
 	"sort"
@@ -642,10 +641,10 @@ func (c *checker) reboot(ctx context.Context, vms []vmState) error {
 			return fmt.Errorf("restart batch: %w", err)
 		}
 
-		// Give 5 seconds for reverse proxies to pick up the
+		// Give 10 seconds for reverse proxies to pick up the
 		// now-available services before restarting the next batch.
 		if i+1 < len(batches) {
-			time.Sleep(5 * time.Second)
+			time.Sleep(10 * time.Second)
 		}
 	}
 	return nil
@@ -1002,25 +1001,17 @@ func vmsFromStates(vmStates []vmState) []VM {
 }
 
 func makeBatches[T any](items []T) [][]T {
-	var (
-		out      = [][]T{}
-		perBatch = int(math.Floor(float64(len(items)) / 3.0))
-		next     []T
-	)
-	if perBatch == 0 {
-		perBatch = 1
+	switch len(items) {
+	case 0:
+		return [][]T{}
+	case 1:
+		return [][]T{items}
+	case 2:
+		return [][]T{items[:1], items[1:]}
+	default:
+		x := len(items) / 3
+		return [][]T{items[0:x], items[x : x*2], items[x*2:]}
 	}
-	for i, item := range items {
-		if i > 0 && i%perBatch == 0 {
-			out = append(out, next)
-			next = []T{}
-		}
-		next = append(next, item)
-	}
-	if len(next) == 0 {
-		return out
-	}
-	return append(out, next)
 }
 
 // firstIDs generates the lowest possible unique identifiers for VMs in the
