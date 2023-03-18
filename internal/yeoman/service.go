@@ -179,7 +179,6 @@ func getStatsWithIP(
 	ip IP,
 ) (stats, error) {
 	var zero stats
-
 	uri := fmt.Sprintf("http://%s/health", ip.AddrPort)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
 	if err != nil {
@@ -196,15 +195,18 @@ func getStatsWithIP(
 			rsp.StatusCode)
 	}
 
+	// Reading load is on a best-effort basis and otherwise defaults to 0.
+	// We don't want to treat a deploy as failed if it reports 200 OK even
+	// if it's not configured to send load info back to us.
+	byt, err := io.ReadAll(rsp.Body)
+	if err != nil {
+		return stats{healthy: true}, nil
+	}
 	var data struct {
 		Load float64 `json:"load"`
 	}
-	byt, err := io.ReadAll(rsp.Body)
-	if err != nil {
-		return zero, fmt.Errorf("read all: %w", err)
-	}
 	if err := json.Unmarshal(byt, &data); err != nil {
-		return zero, fmt.Errorf("decode: %s: %w", string(byt), err)
+		return stats{healthy: true}, nil
 	}
 	return stats{healthy: true, load: data.Load}, nil
 }
