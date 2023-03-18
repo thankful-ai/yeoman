@@ -45,9 +45,10 @@ func (rp *ReverseProxy) RedirectHTTPHandler() (http.Handler, error) {
 
 		// If the host isn't an IP address, then we know we're not
 		// communicating on a subnet and can redirect early.
-		addr, err := netip.ParseAddr(r.Host)
+		host := stripPort(r.Host)
+		addr, err := netip.ParseAddr(host)
 		if err != nil {
-			target := "https://" + stripPort(r.Host) + r.URL.RequestURI()
+			target := "https://" + host + r.URL.RequestURI()
 			http.Redirect(w, r, target, http.StatusFound)
 			return
 		}
@@ -78,7 +79,7 @@ func (rp *ReverseProxy) RedirectHTTPHandler() (http.Handler, error) {
 				return
 			}
 		}
-		target := "https://" + stripPort(r.Host) + r.URL.RequestURI()
+		target := "https://" + host + r.URL.RequestURI()
 		http.Redirect(w, r, target, http.StatusFound)
 	})
 	return fn, nil
