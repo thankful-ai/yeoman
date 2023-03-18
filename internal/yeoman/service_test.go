@@ -229,6 +229,64 @@ func TestGetStats(t *testing.T) {
 	}
 }
 
+func TestMakeBatches(t *testing.T) {
+	t.Parallel()
+
+	type testcase struct {
+		have []int
+		want [][]int
+	}
+	tcs := []testcase{
+		{
+			have: []int{},
+			want: [][]int{},
+		},
+		{
+			have: []int{0},
+			want: [][]int{{0}},
+		},
+		{
+			have: []int{0, 0},
+			want: [][]int{{0}, {0}},
+		},
+		{
+			have: []int{0, 0, 0},
+			want: [][]int{{0}, {0}, {0}},
+		},
+		{
+			have: []int{0, 0, 0, 0},
+			want: [][]int{{0}, {0}, {0, 0}},
+		},
+		{
+			have: []int{0, 0, 0, 0, 0},
+			want: [][]int{{0}, {0, 0}, {0, 0}},
+		},
+		{
+			have: []int{0, 0, 0, 0, 0, 0},
+			want: [][]int{{0, 0}, {0, 0}, {0, 0}},
+		},
+		{
+			have: []int{0, 0, 0, 0, 0, 0, 0},
+			want: [][]int{{0, 0}, {0, 0}, {0, 0, 0}},
+		},
+		{
+			have: []int{0, 0, 0, 0, 0, 0, 0, 0},
+			want: [][]int{{0, 0}, {0, 0, 0}, {0, 0, 0}},
+		},
+	}
+	for _, tc := range tcs {
+		tc := tc
+		t.Run(strconv.Itoa(len(tc.have)), func(t *testing.T) {
+			t.Parallel()
+
+			got := makeBatches(tc.have)
+			if mustMarshal(t, got) != mustMarshal(t, tc.want) {
+				t.Fatalf("want %v, got %v", tc.want, got)
+			}
+		})
+	}
+}
+
 func newStub() *httptest.Server {
 	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rsp, exists := data[r.Method+" "+r.RequestURI]
@@ -280,32 +338,10 @@ func log() (*slog.Logger, func()) {
 	return slog.New(slog.NewTextHandler(devnull)), closer
 }
 
-func TestMakeBatches(t *testing.T) {
-	t.Parallel()
-
-	type testcase struct {
-		want int
-		have []int
+func mustMarshal(t *testing.T, x interface{}) string {
+	byt, err := json.Marshal(x)
+	if err != nil {
+		t.Fatal(t)
 	}
-	tcs := []testcase{
-		{want: 0, have: []int{}},
-		{want: 1, have: []int{0}},
-		{want: 2, have: []int{0, 0}},
-		{want: 3, have: []int{0, 0, 0}},
-		{want: 3, have: []int{0, 0, 0, 0}},
-		{want: 3, have: []int{0, 0, 0, 0, 0}},
-		{want: 3, have: []int{0, 0, 0, 0, 0, 0}},
-		{want: 3, have: []int{0, 0, 0, 0, 0, 0, 0}},
-	}
-	for _, tc := range tcs {
-		tc := tc
-		t.Run(strconv.Itoa(len(tc.have)), func(t *testing.T) {
-			t.Parallel()
-
-			got := makeBatches(tc.have)
-			if len(got) != tc.want {
-				t.Fatalf("want %d, got %d", tc.want, got)
-			}
-		})
-	}
+	return string(byt)
 }

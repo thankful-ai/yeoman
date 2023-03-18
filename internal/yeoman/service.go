@@ -637,6 +637,7 @@ func (c *checker) reboot(ctx context.Context, vms []vmState) error {
 
 	batches := makeBatches(vms)
 	for i, vmBatch := range batches {
+		vmBatch := vmBatch
 		if err := restartBatch(vmBatch); err != nil {
 			return fmt.Errorf("restart batch: %w", err)
 		}
@@ -1010,6 +1011,12 @@ func makeBatches[T any](items []T) [][]T {
 		return [][]T{items[:1], items[1:]}
 	default:
 		x := len(items) / 3
+
+		// For 5 (and other cases with a remainder of 2) we want
+		// lengths of 1, 2, 2. Without this extra case, we get 1, 1, 3.
+		if len(items)%3 == 2 {
+			return [][]T{items[0:x], items[x : x*2+1], items[x*2+1:]}
+		}
 		return [][]T{items[0:x], items[x : x*2], items[x*2:]}
 	}
 }
