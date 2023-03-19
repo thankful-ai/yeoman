@@ -460,10 +460,11 @@ func (s *service) startupVMs(
 	defer deployCancel(nil)
 
 	errPool := pool.New().WithErrors()
-	for _, vm := range vms {
+	for _, vm := range newVMs {
 		vm := vm
 		errPool.Go(func() error {
-			err := s.pollUntilHealthy(ctx, vm, opts, deployCancel)
+			err := s.pollUntilHealthy(ctx, vm.vm, opts,
+				deployCancel)
 			if err != nil {
 				return fmt.Errorf("poll until healthy: %w",
 					err)
