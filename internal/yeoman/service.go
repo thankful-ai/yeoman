@@ -615,7 +615,7 @@ func (c *checker) reboot(ctx context.Context, vms []vmState) error {
 
 		// First stop and stop all VMs in our batch.
 		p := pool.New().WithErrors()
-		for _, vm := range vms {
+		for _, vm := range vmBatch {
 			vm := vm
 			p.Go(func() error {
 				err := c.service.zone.vmStore.RestartVM(ctx,
@@ -644,19 +644,19 @@ func (c *checker) reboot(ctx context.Context, vms []vmState) error {
 			for _, name := range names {
 				nameSet[name] = struct{}{}
 			}
-			vms = make([]vmState, 0, len(names))
+			vmBatch = make([]vmState, 0, len(names))
 			for _, vm := range newVMs {
 				if _, exist := nameSet[vm.vm.Name]; !exist {
 					continue
 				}
-				vms = append(vms, vm)
+				vmBatch = append(vmBatch, vm)
 			}
 		}
 
 		// Now with our new IPs, poll all of our servers until they all
 		// report healthy.
 		p = pool.New().WithErrors()
-		for _, vm := range vms {
+		for _, vm := range vmBatch {
 			vm := vm
 			p.Go(func() error {
 				err := c.service.pollUntilHealthy(ctx,
@@ -676,7 +676,6 @@ func (c *checker) reboot(ctx context.Context, vms []vmState) error {
 
 	batches := makeBatches(vms)
 	for i, vmBatch := range batches {
-		vmBatch := vmBatch
 		if err := restartBatch(vmBatch); err != nil {
 			return fmt.Errorf("restart batch: %w", err)
 		}
