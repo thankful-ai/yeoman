@@ -612,6 +612,7 @@ func (c *checker) reboot(ctx context.Context, vms []vmState) error {
 
 		c.log.Info("restarting batch", slog.Any("batch", names))
 
+		// First stop and stop all VMs in our batch.
 		p := pool.New().WithErrors()
 		for _, vm := range vms {
 			vm := vm
@@ -619,14 +620,49 @@ func (c *checker) reboot(ctx context.Context, vms []vmState) error {
 				err := c.service.zone.vmStore.RestartVM(ctx,
 					c.service.log, vm.vm)
 				if err != nil {
-					return fmt.Errorf("restart vm %s: %w",
-						vm.vm.Name, err)
+					return fmt.Errorf(
+						"restart vm %s: %w", vm.vm.Name, err)
 				}
-				err = c.service.pollUntilHealthy(ctx,
+				return nil
+			})
+		}
+		if err := p.Wait(); err != nil {
+			return fmt.Errorf("wait: %w", err)
+		}
+
+		// Now we need to refresh our VMs if we don't have static IPs,
+		// since our IP addresses may have changed.
+		if !c.service.opts.StaticIP {
+			if err := c.service.zone.getVMs(ctx); err != nil {
+				return fmt.Errorf("get vms: %w", err)
+			}
+
+			// We only want to operate on VMs in this batch.
+			newVMs := c.service.getVMs()
+			nameSet := make(map[string]struct{}, len(names))
+			for _, name := range names {
+				nameSet[name] = struct{}{}
+			}
+			vms = make([]vmState, 0, len(names))
+			for _, vm := range newVMs {
+				if _, exist := nameSet[vm.vm.Name]; !exist {
+					continue
+				}
+				vms = append(vms, vm)
+			}
+		}
+
+		// Now with our new IPs, poll all of our servers until they all
+		// report healthy.
+		p = pool.New().WithErrors()
+		for _, vm := range vms {
+			vm := vm
+			p.Go(func() error {
+				err := c.service.pollUntilHealthy(ctx,
 					vmSet[vm.vm.Name], opts, deployCancel)
 				if err != nil {
-					return fmt.Errorf("poll until healthy: %w",
-						err)
+					return fmt.Errorf(
+						"poll until healthy: %w", err)
 				}
 				return nil
 			})

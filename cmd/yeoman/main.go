@@ -493,7 +493,6 @@ func buildImage(
 func layerFromDir(root string) (v1.Layer, error) {
 	var b bytes.Buffer
 	tw := tar.NewWriter(&b)
-
 	err := filepath.Walk(root, func(fp string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
@@ -546,9 +545,11 @@ func layerFromDir(root string) (v1.Layer, error) {
 	if err := tw.Close(); err != nil {
 		return nil, fmt.Errorf("failed to finish tar: %w", err)
 	}
-	tb, err := tarball.LayerFromReader(&b)
+	tb, err := tarball.LayerFromOpener(func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(b.Bytes())), nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("layer from reader: %w", err)
+		return nil, fmt.Errorf("layer from opener: %w", err)
 	}
 	return tb, nil
 }
