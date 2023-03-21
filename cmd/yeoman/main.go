@@ -28,7 +28,10 @@ import (
 	"golang.org/x/exp/slog"
 )
 
-const workDir = "/app"
+const (
+	workDir    = "/app"
+	yeomanName = "yeoman"
+)
 
 func main() {
 	if err := run(); err != nil {
@@ -57,6 +60,8 @@ func run() error {
 	switch arg {
 	case "init":
 		return initYeoman(tail, *configPath, *debug)
+	case "shutdown":
+		return shutdown(tail, *configPath)
 	case "service":
 		return service(tail, serviceOpts{
 			configPath:  *configPath,
@@ -101,7 +106,6 @@ func initYeoman(args []string, configPath string, debug bool) error {
 
 	// TODO(egtann) if this doesn't exist on first run, prompt the user for
 	// required info.
-	const yeomanName = "yeoman"
 	conf, err := yeoman.ParseConfigForService(yeomanName)
 	if err != nil {
 		return fmt.Errorf("parse config: %w", err)
@@ -155,7 +159,6 @@ func initYeoman(args []string, configPath string, debug bool) error {
 			return a
 		},
 	}.NewTextHandler(os.Stdout)
-
 	log := slog.New(handler)
 
 	// Delete our VM if it exists.
@@ -200,6 +203,76 @@ func initYeoman(args []string, configPath string, debug bool) error {
 		return fmt.Errorf("run: %w", err)
 	}
 	return nil
+}
+
+// shutdown the yeoman server. All services will continue running.
+func shutdown(args []string, configPath string) error {
+	if len(args) != 0 {
+		return errors.New("unknown arguments")
+	}
+
+	const yeomanName = "yeoman"
+	conf, err := yeoman.ParseConfigForService(yeomanName)
+	if err != nil {
+		return fmt.Errorf("parse config: %w", err)
+	}
+	if len(conf.ProviderRegistries) == 0 {
+		return fmt.Errorf("missing providerRegistries in %s",
+			yeoman.AppConfigName)
+	}
+
+	pr := conf.ProviderRegistries[0]
+	parts := strings.Split(string(pr.Provider), ":")
+	if len(parts) != 4 {
+		return fmt.Errorf("invalid cloud provider: %s", pr.Provider)
+	}
+	var (
+		providerName = parts[0]
+		projectName  = parts[1]
+		region       = parts[2]
+		zone         = parts[3]
+	)
+	if providerName != "gcp" {
+		return fmt.Errorf("unknown provider: %s", providerName)
+	}
+
+	regName, _, _ := strings.Cut(pr.Registry, "/")
+	terra, err := google.NewGCP(yeoman.HTTPClient(), projectName, region,
+		zone, pr.ServiceAccount, regName, pr.Registry)
+	if err != nil {
+		return fmt.Errorf("gcp new: %w", err)
+	}
+
+	// If any server exists called yeoman, first delete it.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer func() { cancel() }()
+
+	handler := slog.HandlerOptions{
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			// Remove time from the output.
+			if a.Key == slog.TimeKey {
+				return slog.Attr{}
+			}
+			return a
+		},
+	}.NewTextHandler(os.Stdout)
+	log := slog.New(handler)
+
+	// Delete our VM if it exists.
+	vms, err := terra.GetAllVMs(ctx, log)
+	if err != nil {
+		return fmt.Errorf("get all vms: %w", err)
+	}
+	for _, vm := range vms {
+		if vm.Name != yeomanName {
+			continue
+		}
+		if err = terra.DeleteVM(ctx, log, yeomanName); err != nil {
+			return fmt.Errorf("delete vm: %w", err)
+		}
+		return nil
+	}
+	return fmt.Errorf("yeoman server not running in %s", pr.Provider)
 }
 
 type serviceOpts struct {
