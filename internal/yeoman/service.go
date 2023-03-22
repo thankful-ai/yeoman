@@ -680,10 +680,10 @@ func (c *checker) reboot(ctx context.Context, vms []vmState) error {
 			return fmt.Errorf("restart batch: %w", err)
 		}
 
-		// Give 10 seconds for reverse proxies to pick up the
+		// Give 30 seconds for reverse proxies to pick up the
 		// now-available services before restarting the next batch.
 		if i+1 < len(batches) {
-			time.Sleep(10 * time.Second)
+			time.Sleep(30 * time.Second)
 		}
 	}
 	return nil
