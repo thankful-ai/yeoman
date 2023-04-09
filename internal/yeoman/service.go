@@ -20,11 +20,8 @@ import (
 	"golang.org/x/exp/slog"
 )
 
-// service represents a deployed app across one or more VMs. A service does not
-// need to monitor for changes made to its definition. Services are immutable.
-// Any changes to ServiceOpts will result in the Server shutting down this
-// service and booting a new one with the new options in place. This
-// dramatically simplifies the logic.
+// service represents a deployed app across one or more VMs. A service belongs
+// to a zone.
 type service struct {
 	log  *slog.Logger
 	opts ServiceOpts
@@ -551,7 +548,7 @@ func (s *service) tags() []string {
 }
 
 // HTTPClient returns an HTTP client that doesn't share a global transport. The
-// implementation is taken from githuc.com/hashicorp/go-cleanhttp.
+// implementation is taken from github.com/hashicorp/go-cleanhttp.
 func HTTPClient() *http.Client {
 	return &http.Client{
 		Transport: &http.Transport{
