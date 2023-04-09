@@ -21,11 +21,6 @@ type zone struct {
 	vmStore        VMStore
 	providerRegion *providerRegion
 
-	// serviceShutdownToken mapping service names to shutdown tokens.
-	serviceShutdownToken map[string]suture.ServiceToken
-	services             map[string]*service
-	servicesMu           deadlock.RWMutex
-
 	vms   []vmState
 	vmsMu deadlock.RWMutex
 
@@ -54,18 +49,18 @@ func newZone(
 	zoneLog := p.log.With(slog.String("zone", zoneName))
 
 	z := &zone{
-		name:                 zoneName,
-		log:                  zoneLog,
-		vmStore:              vmStore,
-		serviceShutdownToken: map[string]suture.ServiceToken{},
-		supervisor:           supervisor,
-		providerRegion:       p,
-		services:             map[string]*service{},
-		vms:                  []vmState{},
+		name:           zoneName,
+		log:            zoneLog,
+		vmStore:        vmStore,
+		supervisor:     supervisor,
+		providerRegion: p,
+		vms:            []vmState{},
 	}
 	_ = supervisor.Add(&reaper{
-		log:  zoneLog.With(slog.String("task", "reaper")),
-		zone: z,
+		log:                  zoneLog.With(slog.String("task", "reaper")),
+		zone:                 z,
+		services:             map[string]*service{},
+		serviceShutdownToken: map[string]suture.ServiceToken{},
 	})
 	_ = supervisor.Add(&vmFetcher{
 		log:  zoneLog.With(slog.String("task", "vmFetcher")),
@@ -75,44 +70,32 @@ func newZone(
 	return z, nil
 }
 
-func (z *zone) removeService(name string, token suture.ServiceToken) error {
-	z.log.Info("removing service", slog.String("serviceName", name))
+func (r *reaper) removeService(name string, token suture.ServiceToken) error {
+	r.log.Info("removing service", slog.String("serviceName", name))
 
-	z.servicesMu.Lock()
-	defer z.servicesMu.Unlock()
-
-	err := z.supervisor.Remove(token)
+	err := r.zone.supervisor.Remove(token)
 	if err != nil {
 		return fmt.Errorf("remove %s: %w", name, err)
 	}
-	delete(z.serviceShutdownToken, name)
+	delete(r.serviceShutdownToken, name)
 	return nil
 }
 
-func (z *zone) hasService(name string) bool {
-	z.servicesMu.RLock()
-	defer z.servicesMu.RUnlock()
-
-	_, exist := z.serviceShutdownToken[name]
+func (r *reaper) hasService(name string) bool {
+	_, exist := r.serviceShutdownToken[name]
 	return exist
 }
 
-func (z *zone) addService(s *service) {
-	z.log.Info("adding service", slog.String("serviceName", s.opts.Name))
+func (r *reaper) addService(s *service) {
+	r.log.Info("adding service", slog.String("serviceName", s.opts.Name))
 
-	z.servicesMu.Lock()
-	defer z.servicesMu.Unlock()
-
-	token := z.supervisor.Add(s)
-	z.serviceShutdownToken[s.opts.Name] = token
-	z.services[s.opts.Name] = s
+	token := r.zone.supervisor.Add(s)
+	r.serviceShutdownToken[s.opts.Name] = token
+	r.services[s.opts.Name] = s
 }
 
-func (z *zone) updateService(opt ServiceOpts) {
-	z.servicesMu.Lock()
-	defer z.servicesMu.Unlock()
-
-	s := z.services[opt.Name]
+func (r *reaper) updateService(opt ServiceOpts) {
+	s := r.services[opt.Name]
 	s.opts = opt
 }
 
@@ -146,6 +129,10 @@ func (v *vmFetcher) Serve(ctx context.Context) error {
 type reaper struct {
 	log  *slog.Logger
 	zone *zone
+
+	// serviceShutdownToken mapping service names to shutdown tokens.
+	serviceShutdownToken map[string]suture.ServiceToken
+	services             map[string]*service
 }
 
 func (r *reaper) Serve(ctx context.Context) error {
@@ -159,11 +146,11 @@ func (r *reaper) Serve(ctx context.Context) error {
 		// Any services which are in r.zone.serviceShutdownToken
 		// but no longer in opts were removed. We should delete them.
 		var toDelete []string
-		for name, token := range r.zone.serviceShutdownToken {
+		for name, token := range r.serviceShutdownToken {
 			if _, exist := services[name]; exist {
 				continue
 			}
-			err := r.zone.removeService(name, token)
+			err := r.removeService(name, token)
 			if err != nil {
 				return fmt.Errorf("remove service: %w", err)
 			}
@@ -171,12 +158,12 @@ func (r *reaper) Serve(ctx context.Context) error {
 
 		// Start any new services
 		for _, opt := range services {
-			if r.zone.hasService(opt.Name) {
+			if r.hasService(opt.Name) {
 				// Update our opts in case they changed.
-				r.zone.updateService(opt)
+				r.updateService(opt)
 				continue
 			}
-			r.zone.addService(newService(r.zone, opt))
+			r.addService(newService(r.zone, opt))
 		}
 
 		// Delete orphaned VMs which are no longer attached to any
@@ -193,7 +180,7 @@ func (r *reaper) Serve(ctx context.Context) error {
 			}
 
 			serviceName := strings.Join(parts[1:len(parts)-1], "-")
-			if r.zone.hasService(serviceName) {
+			if r.hasService(serviceName) {
 				continue
 			}
 			toDelete = append(toDelete, vm.vm.Name)

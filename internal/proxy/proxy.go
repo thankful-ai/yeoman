@@ -295,8 +295,10 @@ func (r *ReverseProxy) CheckHealth() error {
 	// Check the health for each of them.
 	for host, frontend := range newReg.Services {
 		// We don't need to check health of the proxy. An external
-		// status monitoring tool should be used.
-		if strings.HasPrefix(host, "proxy.") {
+		// status monitoring tool should be used. We don't look for
+		// "proxy." to also find proxy-staging, etc. Any prefix of proxy
+		// will be skipped.
+		if strings.HasPrefix(host, "proxy") {
 			continue
 		}
 		frontend.liveBackends = []netip.AddrPort{}

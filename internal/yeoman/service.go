@@ -718,18 +718,28 @@ func (c *checker) Serve(ctx context.Context) error {
 
 	checkCount := func(vms []vmState) error {
 		if opts.Count == len(vms) {
-			c.log.Debug("skip check count",
-				slog.Int("count", opts.Count))
-			var toBoot []VM
+			var (
+				toBoot      []VM
+				toBootNames []string
+			)
 			for _, vm := range vms {
 				if vm.vm.Running {
 					continue
 				}
 				toBoot = append(toBoot, vm.vm)
+				toBootNames = append(toBootNames, vm.vm.Name)
 			}
 			if len(toBoot) == 0 {
+				c.log.Debug("skip check count",
+					slog.Int("count", opts.Count))
 				return nil
 			}
+			c.log.Info("starting adjustment",
+				slog.String("strategy", "boot"),
+				slog.String("reason", "correct vm count but not running"),
+				slog.String("booting", fmt.Sprint(toBootNames)),
+				slog.Int("want", opts.Count),
+				slog.Int("have", len(vms)))
 
 			// Allow 5 minutes to receive a healthy response before
 			// timing out.

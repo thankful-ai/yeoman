@@ -6,9 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sync"
 
 	"cloud.google.com/go/storage"
+	"github.com/sasha-s/go-deadlock"
 	"github.com/thankful-ai/yeoman/internal/yeoman"
 	"google.golang.org/api/iterator"
 )
@@ -17,7 +17,7 @@ var _ yeoman.ServiceStore = &Bucket{}
 
 type Bucket struct {
 	name string
-	mu   sync.RWMutex
+	mu   deadlock.RWMutex
 }
 
 func NewBucket(name string) *Bucket {

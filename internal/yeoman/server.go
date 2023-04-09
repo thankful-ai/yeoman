@@ -165,11 +165,9 @@ func (s *serviceScanner) Serve(ctx context.Context) error {
 		return newOpts, nil
 	}
 
-	opts, err := addRemoveServices(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("add remove services: %w", err)
-	}
+	var opts map[string]ServiceOpts
 	for {
+		var err error
 		opts, err = addRemoveServices(ctx, opts)
 		if err != nil {
 			return fmt.Errorf("add remove services: %w", err)
