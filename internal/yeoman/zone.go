@@ -2,7 +2,6 @@ package yeoman
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -36,7 +35,8 @@ func newZone(
 ) (*zone, error) {
 	supervisor := suture.New("server", suture.Spec{
 		EventHook: func(ev suture.Event) {
-			p.log.Error("event hook", errors.New(ev.String()))
+			p.log.Error("event hook",
+				slog.String("error", ev.String()))
 		},
 	})
 

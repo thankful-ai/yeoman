@@ -171,7 +171,8 @@ func checkHealth(
 	sighupCh <-chan bool,
 ) {
 	if err := rp.CheckHealth(); err != nil {
-		log.Error("failed to check health", err)
+		log.Error("failed to check health",
+			slog.String("error", err.Error()))
 	}
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
@@ -180,7 +181,8 @@ func checkHealth(
 		case <-ticker.C:
 			err := rp.CheckHealth()
 			if err != nil {
-				log.Error("failed to check health", err)
+				log.Error("failed to check health",
+					slog.String("error", err.Error()))
 			}
 		case <-sighupCh:
 			return
@@ -204,7 +206,8 @@ func gracefulRestart(
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {
-		log.Error("failed to shutdown server gracefully", err)
+		log.Error("failed to shutdown server gracefully",
+			slog.String("error", err.Error()))
 		os.Exit(1)
 	}
 	log.Info("shut down")

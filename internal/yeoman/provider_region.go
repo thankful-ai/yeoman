@@ -2,7 +2,6 @@ package yeoman
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -38,7 +37,8 @@ func newProviderRegion(
 ) (*providerRegion, error) {
 	supervisor := suture.New("server", suture.Spec{
 		EventHook: func(ev suture.Event) {
-			s.log.Error("event hook", errors.New(ev.String()))
+			s.log.Error("event hook",
+				slog.String("error", ev.String()))
 		},
 	})
 

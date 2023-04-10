@@ -90,7 +90,8 @@ func newService(
 ) *service {
 	supervisor := suture.New(fmt.Sprintf("srv_%s", opt.Name), suture.Spec{
 		EventHook: func(ev suture.Event) {
-			z.log.Error("event hook", errors.New(ev.String()))
+			z.log.Error("event hook",
+				slog.String("error", ev.String()))
 		},
 	})
 
@@ -163,18 +164,6 @@ func getStats(
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	st, err := getStatsWithIP(ctx, vm, ip)
-	if err != nil {
-		return stats{}, fmt.Errorf("get stats internal: %w", err)
-	}
-	return st, nil
-}
-
-func getStatsWithIP(
-	ctx context.Context,
-	vm VM,
-	ip IP,
-) (stats, error) {
 	var zero stats
 	uri := fmt.Sprintf("http://%s/health", ip.AddrPort)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
@@ -430,49 +419,39 @@ func (s *service) startupVMs(
 	for _, vm := range toCreate {
 		vm := vm
 		p.Go(func() error {
+			// Allow 5 minutes to receive a healthy response before
+			// timing out.
+			ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+			defer cancel()
+
 			err := s.zone.vmStore.CreateVM(ctx, s.log, vm)
 			if err != nil {
 				return fmt.Errorf("create vm: %w", err)
 			}
+
+			// Allow us to cancel any health checks if any new
+			// deploys happen.
+			ctx, deployCancel := context.WithCancelCause(ctx)
+			defer deployCancel(nil)
+
+			err = s.pollUntilHealthy(ctx, vm, opts, deployCancel)
+			if err != nil {
+				return fmt.Errorf("poll until healthy: %w", err)
+			}
+			s.log.Info("vm reported healthy",
+				slog.String("vm", vm.Name))
+
 			return nil
 		})
 	}
 	if err := p.Wait(); err != nil {
 		return fmt.Errorf("wait: %w", err)
 	}
+
+	s.log.Info("all vms reported healthy")
 	if err := s.zone.getVMs(ctx); err != nil {
 		return fmt.Errorf("get vms: %w", err)
 	}
-	newVMs := s.getVMs()
-
-	s.log.Info("waiting for services on new vms to boot",
-		slog.Int("count", len(newVMs)))
-
-	// Allow 5 minutes to receive a healthy response before timing out.
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-	defer cancel()
-
-	// Allow us to cancel any health checks if any new deploys happen.
-	ctx, deployCancel := context.WithCancelCause(ctx)
-	defer deployCancel(nil)
-
-	errPool := pool.New().WithErrors()
-	for _, vm := range newVMs {
-		vm := vm
-		errPool.Go(func() error {
-			err := s.pollUntilHealthy(ctx, vm.vm, opts,
-				deployCancel)
-			if err != nil {
-				return fmt.Errorf("poll until healthy: %w",
-					err)
-			}
-			return nil
-		})
-	}
-	if err := errPool.Wait(); err != nil {
-		return fmt.Errorf("wait: %w", err)
-	}
-	s.log.Info("services on new vms reported healthy")
 	return nil
 }
 
@@ -1019,7 +998,8 @@ func (c *checker) Serve(ctx context.Context) error {
 			// don't try to reapply it every iteration of the loop.
 			c.badDeployUpdatedAt = &c.service.opts.UpdatedAt
 			err = fmt.Errorf("check: %w", err)
-			c.log.Error("failed deploy or adjustment", err)
+			c.log.Error("failed deploy or adjustment",
+				slog.String("error", err.Error()))
 			select {
 			case <-time.After(delay):
 				continue

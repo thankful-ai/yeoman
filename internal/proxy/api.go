@@ -6,6 +6,8 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+
+	"golang.org/x/exp/slog"
 )
 
 // RedirectHTTPHandler redirects http requests to use the API if the request
@@ -74,7 +76,7 @@ func (rp *ReverseProxy) RedirectHTTPHandler() (http.Handler, error) {
 				if err != nil {
 					rp.log.Error(
 						"failed to encode registry",
-						err)
+						slog.String("error", err.Error()))
 				}
 				return
 			}
@@ -90,5 +92,5 @@ func stripPort(hostport string) string {
 	if err != nil {
 		return hostport
 	}
-	return net.JoinHostPort(host, "443")
+	return host
 }
