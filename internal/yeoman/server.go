@@ -133,13 +133,43 @@ func (s *serviceScanner) Serve(ctx context.Context) error {
 
 		s.log.Debug("refreshing services")
 
-		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		const timeout = 10 * time.Second
+		ctx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 
-		newOpts, err := s.server.serviceStore.GetServices(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("get services: %w", err)
+		// Occassionally the GetServices call can hang preventing all
+		// future deploys. We must force this function to exit at the
+		// specified timeout.
+		//
+		// It is unclear why GetServices hangs sporadically and is
+		// confirmed not to be a deadlock.
+		//
+		// TODO(egtann) identify the root cause.
+		type result struct {
+			opts map[string]ServiceOpts
+			err  error
 		}
+		resultCh := make(chan result)
+		go func() {
+			opts, err := s.server.serviceStore.GetServices(ctx)
+			if err != nil {
+				err = fmt.Errorf("get services: %w", err)
+				resultCh <- result{err: err}
+				return
+			}
+			resultCh <- result{opts: opts}
+		}()
+		var newOpts map[string]ServiceOpts
+		select {
+		case x := <-resultCh:
+			if x.err != nil {
+				return nil, x.err
+			}
+			newOpts = x.opts
+		case <-ctx.Done():
+			return nil, errors.New("timeout reached")
+		}
+
 		names := make([]string, 0, len(newOpts))
 		for _, o := range newOpts {
 			names = append(names, o.Name)
@@ -148,7 +178,7 @@ func (s *serviceScanner) Serve(ctx context.Context) error {
 			slog.String("names", fmt.Sprintf("%v", names)))
 
 		for _, opt := range newOpts {
-			if err = s.server.addService(opt); err != nil {
+			if err := s.server.addService(opt); err != nil {
 				return nil, fmt.Errorf("add service: %w", err)
 			}
 		}
