@@ -141,15 +141,21 @@ func (s *serviceScanner) Serve(ctx context.Context) error {
 		// future deploys. We must force this function to exit at the
 		// specified timeout.
 		//
-		// It is unclear why GetServices hangs sporadically and is
-		// confirmed not to be a deadlock.
+		// It is unclear why GetServices hangs sporadically. I've
+		// confirmed it's not a deadlock with its mutexes. I have
+		// modified the GCP bucket code to check ctx.Done() more
+		// frequently and limit the size of reads to narrow down the
+		// issue.
+		//
+		// If this doesn't address the problem the issue may be in the
+		// Google Cloud Storage library.
 		//
 		// TODO(egtann) identify the root cause.
 		type result struct {
 			opts map[string]ServiceOpts
 			err  error
 		}
-		resultCh := make(chan result)
+		resultCh := make(chan result, 1)
 		go func() {
 			opts, err := s.server.serviceStore.GetServices(ctx)
 			if err != nil {

@@ -123,7 +123,12 @@ func (b *Bucket) list(ctx context.Context) ([]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("next: %w", err)
 		}
-		names = append(names, objAttrs.Name)
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("next: %w", ctx.Err())
+		default:
+			names = append(names, objAttrs.Name)
+		}
 	}
 	return names, nil
 }
@@ -141,7 +146,9 @@ func (b *Bucket) get(ctx context.Context, name string) ([]byte, error) {
 	}
 	defer func() { _ = r.Close() }()
 
-	byt, err := io.ReadAll(r)
+	const maxBytes = 32 * 1024 // 32 KB
+	lr := io.LimitReader(r, maxBytes)
+	byt, err := io.ReadAll(lr)
 	if err != nil {
 		return nil, fmt.Errorf("read all: %w", err)
 	}
