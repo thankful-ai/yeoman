@@ -145,10 +145,9 @@ func (s *serviceScanner) Serve(ctx context.Context) error {
 		// confirmed it's not a deadlock with its mutexes. I have
 		// modified the GCP bucket code to check ctx.Done() more
 		// frequently and limit the size of reads to narrow down the
-		// issue.
-		//
-		// If this doesn't address the problem the issue may be in the
-		// Google Cloud Storage library.
+		// issue. I believe it may be due to using a shared HTTP
+		// Transport, so I have created new transports on every request
+		// to debug.
 		//
 		// TODO(egtann) identify the root cause.
 		type result struct {

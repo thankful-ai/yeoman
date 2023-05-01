@@ -815,9 +815,9 @@ func (c *checker) Serve(ctx context.Context) error {
 			return nil
 		}
 
-		// Check if we need to reboot for security reasons
-		// (kernel/OS updates).
-		yesterday := time.Now().Add(-24 * time.Hour)
+		// Check if we need to reboot for security reasons (kernel/OS
+		// updates).
+		yesterday := time.Now().Add(-24 * 7 * time.Hour)
 		needSecurityUpdate := c.lastReboot.Before(yesterday)
 
 		// If the service hasn't been newly deployed, and we're not

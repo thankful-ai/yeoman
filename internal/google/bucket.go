@@ -6,11 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
+	"time"
 
 	"cloud.google.com/go/storage"
 	"github.com/sasha-s/go-deadlock"
 	"github.com/thankful-ai/yeoman/internal/yeoman"
 	"google.golang.org/api/iterator"
+	"google.golang.org/api/option"
 )
 
 var _ yeoman.ServiceStore = &Bucket{}
@@ -106,8 +110,31 @@ func (b *Bucket) SetServices(
 	return nil
 }
 
+// httpClient returns an HTTP client that doesn't share a global transport. The
+// implementation is taken from github.com/hashicorp/go-cleanhttp.
+func httpClient() *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   30 * time.Second,
+				KeepAlive: 30 * time.Second,
+				DualStack: true,
+			}).DialContext,
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConnsPerHost:   -1,
+			DisableKeepAlives:     true,
+		},
+	}
+}
+
 func (b *Bucket) list(ctx context.Context) ([]string, error) {
-	client, err := storage.NewClient(ctx)
+	client, err := storage.NewClient(ctx,
+		option.WithHTTPClient(httpClient()))
 	if err != nil {
 		return nil, fmt.Errorf("new client: %w", err)
 	}
@@ -134,7 +161,8 @@ func (b *Bucket) list(ctx context.Context) ([]string, error) {
 }
 
 func (b *Bucket) get(ctx context.Context, name string) ([]byte, error) {
-	client, err := storage.NewClient(ctx)
+	client, err := storage.NewClient(ctx,
+		option.WithHTTPClient(httpClient()))
 	if err != nil {
 		return nil, fmt.Errorf("new client: %w", err)
 	}
@@ -156,7 +184,8 @@ func (b *Bucket) get(ctx context.Context, name string) ([]byte, error) {
 }
 
 func (b *Bucket) set(ctx context.Context, name string, data []byte) error {
-	client, err := storage.NewClient(ctx)
+	client, err := storage.NewClient(ctx,
+		option.WithHTTPClient(httpClient()))
 	if err != nil {
 		return fmt.Errorf("new client: %w", err)
 	}
@@ -182,7 +211,8 @@ func (b *Bucket) set(ctx context.Context, name string, data []byte) error {
 }
 
 func (b *Bucket) DeleteService(ctx context.Context, name string) error {
-	client, err := storage.NewClient(ctx)
+	client, err := storage.NewClient(ctx,
+		option.WithHTTPClient(httpClient()))
 	if err != nil {
 		return fmt.Errorf("new client: %w", err)
 	}
