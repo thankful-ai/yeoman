@@ -13,6 +13,7 @@ import (
 	"cloud.google.com/go/storage"
 	"github.com/sasha-s/go-deadlock"
 	"github.com/thankful-ai/yeoman/internal/yeoman"
+	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
@@ -114,11 +115,12 @@ func (b *Bucket) SetServices(
 // httpClient returns an HTTP client that doesn't share a global transport. The
 // implementation is taken from github.com/hashicorp/go-cleanhttp.
 func httpClient(ctx context.Context) (*http.Client, error) {
-	client, err := google.DefaultClient(ctx, "https://www.googleapis.com/auth/devstorage.read_write")
+	client, err := google.DefaultClient(ctx,
+		"https://www.googleapis.com/auth/devstorage.read_write")
 	if err != nil {
 		return nil, fmt.Errorf("default client: %w", err)
 	}
-	client.Transport = &http.Transport{
+	client.Transport.(*oauth2.Transport).Base = &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: (&net.Dialer{
 			Timeout:   30 * time.Second,
