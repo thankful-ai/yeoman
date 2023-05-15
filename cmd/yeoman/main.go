@@ -53,6 +53,8 @@ func run() error {
 	diskSizeGB := flag.Int("disk", 10, "disk size in GB")
 	allowHTTP := flag.Bool("http", false, "allow http")
 	staticIP := flag.Bool("static-ip", false, "use a static ip")
+	unprivilegedUsernsClone := flag.Bool("unprivileged-userns-clone", false,
+		"enable unprivileged user namespaces (dangerous)")
 	debug := flag.Bool("debug", false, "use a debug image with a shell")
 	flag.Parse()
 
@@ -64,13 +66,14 @@ func run() error {
 		return shutdown(tail, *configPath)
 	case "service":
 		return service(tail, serviceOpts{
-			configPath:  *configPath,
-			count:       *count,
-			machineType: *machineType,
-			diskSizeGB:  *diskSizeGB,
-			allowHTTP:   *allowHTTP,
-			staticIP:    *staticIP,
-			debug:       *debug,
+			configPath:              *configPath,
+			count:                   *count,
+			machineType:             *machineType,
+			diskSizeGB:              *diskSizeGB,
+			allowHTTP:               *allowHTTP,
+			staticIP:                *staticIP,
+			unprivilegedUsernsClone: *unprivilegedUsernsClone,
+			debug:                   *debug,
 		})
 	case "version":
 		fmt.Println("v0.0.0-alpha")
@@ -276,13 +279,14 @@ func shutdown(args []string, configPath string) error {
 }
 
 type serviceOpts struct {
-	configPath  string
-	count       int
-	machineType string
-	diskSizeGB  int
-	allowHTTP   bool
-	staticIP    bool
-	debug       bool
+	configPath              string
+	count                   int
+	machineType             string
+	diskSizeGB              int
+	allowHTTP               bool
+	staticIP                bool
+	unprivilegedUsernsClone bool
+	debug                   bool
 }
 
 func service(args []string, opts serviceOpts) error {
@@ -340,13 +344,14 @@ func deployService(args []string, opts serviceOpts) error {
 		return errors.New("invalid service name, must be url-safe")
 	}
 	data := yeoman.ServiceOpts{
-		Name:        arg,
-		MachineType: opts.machineType,
-		DiskSizeGB:  opts.diskSizeGB,
-		AllowHTTP:   opts.allowHTTP,
-		Count:       opts.count,
-		StaticIP:    opts.staticIP,
-		UpdatedAt:   time.Now().UTC(),
+		Name:                    arg,
+		MachineType:             opts.machineType,
+		DiskSizeGB:              opts.diskSizeGB,
+		AllowHTTP:               opts.allowHTTP,
+		Count:                   opts.count,
+		StaticIP:                opts.staticIP,
+		UnprivilegedUsernsClone: opts.unprivilegedUsernsClone,
+		UpdatedAt:               time.Now().UTC(),
 	}
 	services[data.Name] = data
 	if err = store.SetServices(ctx, services); err != nil {

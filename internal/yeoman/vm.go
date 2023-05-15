@@ -38,6 +38,12 @@ type VM struct {
 	// the public internet.
 	AllowHTTP bool `json:"allowHTTP"`
 
+	// UnprivilegedUsernsClone must be enabled to run headless Chrome with a
+	// sandbox in Docker. It increases attack surface in the kernel but
+	// presumably by less than running Chrome without a sandbox at all. This
+	// is Google's recommendation to sandbox Chrome.
+	UnprivilegedUsernsClone bool `json:"unprivilegedUsernsClone"`
+
 	// Running is true when the VM is live and false in all other
 	// circumstances.
 	Running bool `json:"running"`

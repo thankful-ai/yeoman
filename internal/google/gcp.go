@@ -122,13 +122,23 @@ write_files:
     ExecStart=/usr/bin/docker run --pull=always --rm -t -p 80:3000 -p 443:3001 -e ROOT='/app' --name=app %s/%s:latest
     ExecStop=/usr/bin/docker stop app -t 300
     ExecStopPost=/usr/bin/docker rm app
+%s
 
 runcmd:
 - systemctl daemon-reload
 - systemctl start cloudservice.service`
 
+	var unprivilegedUsernsClone string
+	if vm.UnprivilegedUsernsClone {
+		unprivilegedUsernsClone = `
+- path: /etc/sysctl.d/00-local-userns.conf
+  content: |
+    kernel.unprivileged_userns_clone=1`
+	}
+
 	googleVM.Metadata.Items[0].Value = fmt.Sprintf(cloudConfig,
-		g.registryName, g.registryPath, vm.ContainerImage)
+		g.registryName, g.registryPath, vm.ContainerImage,
+		unprivilegedUsernsClone)
 
 	byt, err := json.Marshal(googleVM)
 	if err != nil {
@@ -254,6 +264,7 @@ func (g *GCP) vmToGoogle(v yeoman.VM) (*vm, error) {
 		v.Tags = append(v.Tags, "http-server")
 		v.Tags = append(v.Tags, "https-server")
 	}
+
 	mt := fmt.Sprintf("zones/%s/machineTypes/%s", g.zone, v.MachineType)
 	googleVM := &vm{
 		Name:        v.Name,

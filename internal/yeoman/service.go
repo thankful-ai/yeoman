@@ -123,13 +123,14 @@ func newService(
 // ServiceOpts contains the persistant state of a Service, as configured via
 // `yeoman -count $count service create $name`.
 type ServiceOpts struct {
-	Name        string    `json:"name"`
-	MachineType string    `json:"machineType"`
-	DiskSizeGB  int       `json:"diskSizeGB"`
-	AllowHTTP   bool      `json:"allowHTTP"`
-	StaticIP    bool      `json:"staticIP"`
-	Count       int       `json:"count"`
-	UpdatedAt   time.Time `json:"updatedAt"`
+	Name                    string    `json:"name"`
+	MachineType             string    `json:"machineType"`
+	DiskSizeGB              int       `json:"diskSizeGB"`
+	AllowHTTP               bool      `json:"allowHTTP"`
+	StaticIP                bool      `json:"staticIP"`
+	UnprivilegedUsernsClone bool      `json:"unprivilegedUsernsClone"`
+	Count                   int       `json:"count"`
+	UpdatedAt               time.Time `json:"updatedAt"`
 }
 
 type stats struct {
