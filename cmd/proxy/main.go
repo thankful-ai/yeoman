@@ -61,15 +61,15 @@ func run() error {
 	var output slog.Handler
 	switch conf.Log.Format {
 	case yeoman.LogFormatJSON, yeoman.LogFormatDefault:
-		output = slog.HandlerOptions{
+		output = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 			Level:       level,
 			ReplaceAttr: removeTime,
-		}.NewJSONHandler(os.Stdout)
+		})
 	case yeoman.LogFormatConsole:
-		output = slog.HandlerOptions{
+		output = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 			Level:       level,
 			ReplaceAttr: removeTime,
-		}.NewTextHandler(os.Stdout)
+		})
 	default:
 		return fmt.Errorf("invalid log format: %s", conf.Log.Format)
 	}

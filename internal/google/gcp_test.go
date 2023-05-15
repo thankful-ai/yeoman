@@ -204,5 +204,6 @@ func log() (*slog.Logger, func()) {
 			panic(err)
 		}
 	}
-	return slog.New(slog.NewTextHandler(devnull)), closer
+	textHandler := slog.NewTextHandler(devnull, &slog.HandlerOptions{})
+	return slog.New(textHandler), closer
 }

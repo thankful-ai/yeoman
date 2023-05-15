@@ -153,7 +153,7 @@ func initYeoman(args []string, configPath string, debug bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer func() { cancel() }()
 
-	handler := slog.HandlerOptions{
+	handler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
 			// Remove time from the output.
 			if a.Key == slog.TimeKey {
@@ -161,7 +161,7 @@ func initYeoman(args []string, configPath string, debug bool) error {
 			}
 			return a
 		},
-	}.NewTextHandler(os.Stdout)
+	})
 	log := slog.New(handler)
 
 	// Delete our VM if it exists.
@@ -250,7 +250,7 @@ func shutdown(args []string, configPath string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer func() { cancel() }()
 
-	handler := slog.HandlerOptions{
+	handler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
 			// Remove time from the output.
 			if a.Key == slog.TimeKey {
@@ -258,7 +258,7 @@ func shutdown(args []string, configPath string) error {
 			}
 			return a
 		},
-	}.NewTextHandler(os.Stdout)
+	})
 	log := slog.New(handler)
 
 	// Delete our VM if it exists.
