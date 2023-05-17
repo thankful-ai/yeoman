@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -668,16 +669,20 @@ func (g *GCP) do(
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	creds, err := google.FindDefaultCredentials(ctx,
-		"https://www.googleapis.com/auth/compute")
-	if err != nil {
-		return nil, fmt.Errorf("find default credentials: %w", err)
+	// Nix builds in a sandbox, so we can't run tests which require default
+	// credentials.
+	if os.Getenv("NIX_BUILD") != "1" {
+		creds, err := google.FindDefaultCredentials(ctx,
+			"https://www.googleapis.com/auth/compute")
+		if err != nil {
+			return nil, fmt.Errorf("find default credentials: %w", err)
+		}
+		token, err := creds.TokenSource.Token()
+		if err != nil {
+			return nil, fmt.Errorf("token: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 	}
-	token, err := creds.TokenSource.Token()
-	if err != nil {
-		return nil, fmt.Errorf("token: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 
 	rsp, err := g.client.Do(req)
 	if err != nil {

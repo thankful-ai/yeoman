@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"time"
 
 	"cloud.google.com/go/storage"
@@ -115,6 +116,11 @@ func (b *Bucket) SetServices(
 // httpClient returns an HTTP client that doesn't share a global transport. The
 // implementation is taken from github.com/hashicorp/go-cleanhttp.
 func httpClient(ctx context.Context) (*http.Client, error) {
+	// Nix builds in a sandbox, so we won't have access to any Google
+	// default credentials when we're running tests on install.
+	if os.Getenv("NIX_BUILD") == "1" {
+		return &http.Client{}, nil
+	}
 	client, err := google.DefaultClient(ctx,
 		"https://www.googleapis.com/auth/devstorage.read_write")
 	if err != nil {
