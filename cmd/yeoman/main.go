@@ -53,6 +53,7 @@ func run() error {
 	diskSizeGB := flag.Int("disk", 10, "disk size in GB")
 	allowHTTP := flag.Bool("http", false, "allow http")
 	staticIP := flag.Bool("static-ip", false, "use a static ip")
+	image := flag.String("image", "", "use an existing image")
 	unprivilegedUsernsClone := flag.Bool("unprivileged-userns-clone", false,
 		"enable unprivileged user namespaces (dangerous)")
 	debug := flag.Bool("debug", false, "use a debug image with a shell")
@@ -72,6 +73,7 @@ func run() error {
 			diskSizeGB:              *diskSizeGB,
 			allowHTTP:               *allowHTTP,
 			staticIP:                *staticIP,
+			image:                   *image,
 			unprivilegedUsernsClone: *unprivilegedUsernsClone,
 			debug:                   *debug,
 		})
@@ -286,6 +288,7 @@ type serviceOpts struct {
 	allowHTTP               bool
 	staticIP                bool
 	unprivilegedUsernsClone bool
+	image                   string
 	debug                   bool
 }
 
@@ -322,9 +325,15 @@ func deployService(args []string, opts serviceOpts) error {
 		return fmt.Errorf("parse config: %w", err)
 	}
 
-	err = buildImage(conf, arg, opts.debug)
-	if err != nil {
-		return fmt.Errorf("build image: %w", err)
+	// There are two ways to deploy with yeoman. If no image is provided,
+	// yeoman will build and deploy it using sensible defaults. If an image
+	// is provided, it was built using other tools (e.g. Docker) and will be
+	// deployed by Yeoman directly.
+	if opts.image == "" {
+		err = buildImage(conf, arg, opts.debug)
+		if err != nil {
+			return fmt.Errorf("build image: %w", err)
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -350,6 +359,7 @@ func deployService(args []string, opts serviceOpts) error {
 		AllowHTTP:               opts.allowHTTP,
 		Count:                   opts.count,
 		StaticIP:                opts.staticIP,
+		Image:                   opts.image,
 		UnprivilegedUsernsClone: opts.unprivilegedUsernsClone,
 		UpdatedAt:               time.Now().UTC(),
 	}
@@ -494,7 +504,7 @@ func buildImageWithConf(
 	case rust, d, cgo:
 		base = "gcr.io/distroless/base"
 	case node:
-		base = "gcr.io/distroless/nodejs18"
+		base = "gcr.io/distroless/nodejs20"
 	default:
 		return fmt.Errorf("unsupported app type: %s", appConf.Type)
 	}
