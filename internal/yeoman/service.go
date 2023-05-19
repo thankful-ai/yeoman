@@ -134,7 +134,6 @@ type ServiceOpts struct {
 	AllowHTTP               bool      `json:"allowHTTP"`
 	StaticIP                bool      `json:"staticIP"`
 	UnprivilegedUsernsClone bool      `json:"unprivilegedUsernsClone"`
-	Image                   string    `json:"image"`
 	Count                   int       `json:"count"`
 	UpdatedAt               time.Time `json:"updatedAt"`
 }
@@ -410,14 +409,10 @@ func (s *service) startupVMs(
 			ips.Internal = availIntIPs[i]
 			ips.External = availExtIPs[i]
 		}
-		containerImage := opts.Name
-		if opts.Image != "" {
-			containerImage = opts.Image
-		}
 		toCreate = append(toCreate, VM{
 			Name:                    fmt.Sprintf("ym-%s-%d", opts.Name, id),
 			Image:                   "projects/cos-cloud/global/images/family/cos-stable",
-			ContainerImage:          containerImage,
+			ContainerImage:          opts.Name,
 			Disk:                    opts.DiskSizeGB,
 			MachineType:             opts.MachineType,
 			AllowHTTP:               opts.AllowHTTP,
