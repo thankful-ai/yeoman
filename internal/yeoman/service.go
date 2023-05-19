@@ -410,14 +410,15 @@ func (s *service) startupVMs(
 			containerImage = opts.Image
 		}
 		toCreate = append(toCreate, VM{
-			Name:           fmt.Sprintf("ym-%s-%d", opts.Name, id),
-			Image:          "projects/cos-cloud/global/images/family/cos-stable",
-			ContainerImage: containerImage,
-			Disk:           opts.DiskSizeGB,
-			MachineType:    opts.MachineType,
-			AllowHTTP:      opts.AllowHTTP,
-			Tags:           s.tags(),
-			IPs:            ips,
+			Name:                    fmt.Sprintf("ym-%s-%d", opts.Name, id),
+			Image:                   "projects/cos-cloud/global/images/family/cos-stable",
+			ContainerImage:          containerImage,
+			Disk:                    opts.DiskSizeGB,
+			MachineType:             opts.MachineType,
+			AllowHTTP:               opts.AllowHTTP,
+			UnprivilegedUsernsClone: opts.UnprivilegedUsernsClone,
+			Tags:                    s.tags(),
+			IPs:                     ips,
 		})
 	}
 
