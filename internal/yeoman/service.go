@@ -60,6 +60,11 @@ func changedMachine(o1, o2 ServiceOpts) *string {
 			o2.StaticIP)
 		return &s
 	}
+	if o1.UnprivilegedUsernsClone != o2.UnprivilegedUsernsClone {
+		s := fmt.Sprintf("new unprivileged userns clone: %t->%t",
+			o1.UnprivilegedUsernsClone, o2.UnprivilegedUsernsClone)
+		return &s
+	}
 	return nil
 }
 
