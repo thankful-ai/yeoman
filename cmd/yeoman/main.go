@@ -55,8 +55,7 @@ func run() error {
 	staticIP := flag.Bool("static-ip", false, "use a static ip")
 	skipBuild := flag.Bool("skip-build", false,
 		"skip building an image, use existing")
-	unprivilegedUsernsClone := flag.Bool("unprivileged-userns-clone", false,
-		"enable unprivileged user namespaces (dangerous)")
+	seccomp := flag.String("seccomp", "", "seccomp profile json file")
 	debug := flag.Bool("debug", false, "use a debug image with a shell")
 	flag.Parse()
 
@@ -67,16 +66,24 @@ func run() error {
 	case "shutdown":
 		return shutdown(tail, *configPath)
 	case "service":
+		var seccompData string
+		if *seccomp != "" {
+			byt, err := os.ReadFile(*seccomp)
+			if err != nil {
+				return err
+			}
+			seccompData = string(byt)
+		}
 		return service(tail, serviceOpts{
-			configPath:              *configPath,
-			count:                   *count,
-			machineType:             *machineType,
-			diskSizeGB:              *diskSizeGB,
-			allowHTTP:               *allowHTTP,
-			staticIP:                *staticIP,
-			skipBuild:               *skipBuild,
-			unprivilegedUsernsClone: *unprivilegedUsernsClone,
-			debug:                   *debug,
+			configPath:  *configPath,
+			count:       *count,
+			machineType: *machineType,
+			diskSizeGB:  *diskSizeGB,
+			allowHTTP:   *allowHTTP,
+			staticIP:    *staticIP,
+			skipBuild:   *skipBuild,
+			seccomp:     seccompData,
+			debug:       *debug,
 		})
 	case "version":
 		fmt.Println("v0.0.0-alpha")
@@ -282,15 +289,15 @@ func shutdown(args []string, configPath string) error {
 }
 
 type serviceOpts struct {
-	configPath              string
-	count                   int
-	machineType             string
-	diskSizeGB              int
-	allowHTTP               bool
-	staticIP                bool
-	unprivilegedUsernsClone bool
-	skipBuild               bool
-	debug                   bool
+	configPath  string
+	count       int
+	machineType string
+	diskSizeGB  int
+	allowHTTP   bool
+	staticIP    bool
+	seccomp     string
+	skipBuild   bool
+	debug       bool
 }
 
 func service(args []string, opts serviceOpts) error {
@@ -354,14 +361,14 @@ func deployService(args []string, opts serviceOpts) error {
 		return errors.New("invalid service name, must be url-safe")
 	}
 	data := yeoman.ServiceOpts{
-		Name:                    arg,
-		MachineType:             opts.machineType,
-		DiskSizeGB:              opts.diskSizeGB,
-		AllowHTTP:               opts.allowHTTP,
-		Count:                   opts.count,
-		StaticIP:                opts.staticIP,
-		UnprivilegedUsernsClone: opts.unprivilegedUsernsClone,
-		UpdatedAt:               time.Now().UTC(),
+		Name:        arg,
+		MachineType: opts.machineType,
+		DiskSizeGB:  opts.diskSizeGB,
+		AllowHTTP:   opts.allowHTTP,
+		Count:       opts.count,
+		StaticIP:    opts.staticIP,
+		Seccomp:     opts.seccomp,
+		UpdatedAt:   time.Now().UTC(),
 	}
 	services[data.Name] = data
 	if err = store.SetServices(ctx, services); err != nil {

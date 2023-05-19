@@ -120,26 +120,26 @@ write_files:
     [Service]
     Environment="HOME=/home/cloudservice"
     ExecStartPre=/usr/bin/docker-credential-gcr configure-docker --registries %s
-    ExecStart=/usr/bin/docker run --pull=always --rm -t -p 80:3000 -p 443:3001 -e ROOT='/app' --name=app %s/%s:latest
+    ExecStart=/usr/bin/docker run --pull=always --rm %s -t -p 80:3000 -p 443:3001 -e ROOT='/app' --name=app %s/%s:latest
     ExecStop=/usr/bin/docker stop app -t 300
     ExecStopPost=/usr/bin/docker rm app
-%s
+- path: /etc/docker/seccomp/custom.json
+  permissions: 0644
+  owner: root
+  content: |
+    %s
 
 runcmd:
 - systemctl daemon-reload
 - systemctl start cloudservice.service`
 
-	var unprivilegedUsernsClone string
-	if vm.UnprivilegedUsernsClone {
-		unprivilegedUsernsClone = `
-- path: /etc/sysctl.d/00-local-userns.conf
-  content: |
-    kernel.unprivileged_userns_clone=1`
+	var securityOpt string
+	if vm.Seccomp != "" {
+		securityOpt = "--security-opt seccomp=/etc/docker/seccomp/custom.json"
 	}
-
 	googleVM.Metadata.Items[0].Value = fmt.Sprintf(cloudConfig,
-		g.registryName, g.registryPath, vm.ContainerImage,
-		unprivilegedUsernsClone)
+		g.registryName, securityOpt, g.registryPath, vm.ContainerImage,
+		vm.Seccomp)
 
 	byt, err := json.Marshal(googleVM)
 	if err != nil {

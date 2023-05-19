@@ -60,9 +60,9 @@ func changedMachine(o1, o2 ServiceOpts) *string {
 			o2.StaticIP)
 		return &s
 	}
-	if o1.UnprivilegedUsernsClone != o2.UnprivilegedUsernsClone {
-		s := fmt.Sprintf("new unprivileged userns clone: %t->%t",
-			o1.UnprivilegedUsernsClone, o2.UnprivilegedUsernsClone)
+	if o1.Seccomp != o2.Seccomp {
+		s := fmt.Sprintf("new seccomp: %d->%d", len(o1.Seccomp),
+			len(o1.Seccomp))
 		return &s
 	}
 	return nil
@@ -128,14 +128,14 @@ func newService(
 // ServiceOpts contains the persistant state of a Service, as configured via
 // `yeoman -count $count service create $name`.
 type ServiceOpts struct {
-	Name                    string    `json:"name"`
-	MachineType             string    `json:"machineType"`
-	DiskSizeGB              int       `json:"diskSizeGB"`
-	AllowHTTP               bool      `json:"allowHTTP"`
-	StaticIP                bool      `json:"staticIP"`
-	UnprivilegedUsernsClone bool      `json:"unprivilegedUsernsClone"`
-	Count                   int       `json:"count"`
-	UpdatedAt               time.Time `json:"updatedAt"`
+	Name        string    `json:"name"`
+	MachineType string    `json:"machineType"`
+	DiskSizeGB  int       `json:"diskSizeGB"`
+	AllowHTTP   bool      `json:"allowHTTP"`
+	StaticIP    bool      `json:"staticIP"`
+	Seccomp     string    `json:"seccomp"`
+	Count       int       `json:"count"`
+	UpdatedAt   time.Time `json:"updatedAt"`
 }
 
 type stats struct {
@@ -410,15 +410,15 @@ func (s *service) startupVMs(
 			ips.External = availExtIPs[i]
 		}
 		toCreate = append(toCreate, VM{
-			Name:                    fmt.Sprintf("ym-%s-%d", opts.Name, id),
-			Image:                   "projects/cos-cloud/global/images/family/cos-stable",
-			ContainerImage:          opts.Name,
-			Disk:                    opts.DiskSizeGB,
-			MachineType:             opts.MachineType,
-			AllowHTTP:               opts.AllowHTTP,
-			UnprivilegedUsernsClone: opts.UnprivilegedUsernsClone,
-			Tags:                    s.tags(),
-			IPs:                     ips,
+			Name:           fmt.Sprintf("ym-%s-%d", opts.Name, id),
+			Image:          "projects/cos-cloud/global/images/family/cos-stable",
+			ContainerImage: opts.Name,
+			Disk:           opts.DiskSizeGB,
+			MachineType:    opts.MachineType,
+			AllowHTTP:      opts.AllowHTTP,
+			Seccomp:        opts.Seccomp,
+			Tags:           s.tags(),
+			IPs:            ips,
 		})
 	}
 
