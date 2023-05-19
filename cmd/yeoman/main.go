@@ -53,7 +53,8 @@ func run() error {
 	diskSizeGB := flag.Int("disk", 10, "disk size in GB")
 	allowHTTP := flag.Bool("http", false, "allow http")
 	staticIP := flag.Bool("static-ip", false, "use a static ip")
-	image := flag.String("image", "", "use an existing image")
+	skipBuild := flag.Bool("skip-build", false,
+		"skip building an image, use existing")
 	unprivilegedUsernsClone := flag.Bool("unprivileged-userns-clone", false,
 		"enable unprivileged user namespaces (dangerous)")
 	debug := flag.Bool("debug", false, "use a debug image with a shell")
@@ -73,7 +74,7 @@ func run() error {
 			diskSizeGB:              *diskSizeGB,
 			allowHTTP:               *allowHTTP,
 			staticIP:                *staticIP,
-			image:                   *image,
+			skipBuild:               *skipBuild,
 			unprivilegedUsernsClone: *unprivilegedUsernsClone,
 			debug:                   *debug,
 		})
@@ -288,7 +289,7 @@ type serviceOpts struct {
 	allowHTTP               bool
 	staticIP                bool
 	unprivilegedUsernsClone bool
-	image                   string
+	skipBuild               bool
 	debug                   bool
 }
 
@@ -325,11 +326,11 @@ func deployService(args []string, opts serviceOpts) error {
 		return fmt.Errorf("parse config: %w", err)
 	}
 
-	// There are two ways to deploy with yeoman. If no image is provided,
-	// yeoman will build and deploy it using sensible defaults. If an image
-	// is provided, it was built using other tools (e.g. Docker) and will be
-	// deployed by Yeoman directly.
-	if opts.image == "" {
+	// There are two ways to deploy with yeoman. Either yeoman will build an
+	// image with sensible defaults, or you will build an image separately
+	// using other tools (e.g. Docker) and be responsible for pushing it to
+	// all the applicable registries yourself prior to a deploy.
+	if !opts.skipBuild {
 		err = buildImage(conf, arg, opts.debug)
 		if err != nil {
 			return fmt.Errorf("build image: %w", err)
@@ -359,7 +360,6 @@ func deployService(args []string, opts serviceOpts) error {
 		AllowHTTP:               opts.allowHTTP,
 		Count:                   opts.count,
 		StaticIP:                opts.staticIP,
-		Image:                   opts.image,
 		UnprivilegedUsernsClone: opts.unprivilegedUsernsClone,
 		UpdatedAt:               time.Now().UTC(),
 	}
