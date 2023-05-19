@@ -70,9 +70,13 @@ func run() error {
 		if *seccomp != "" {
 			byt, err := os.ReadFile(*seccomp)
 			if err != nil {
-				return err
+				return fmt.Errorf("read file: %w", err)
 			}
-			seccompData = string(byt)
+			var buf bytes.Buffer
+			if err = json.Compact(&buf, byt); err != nil {
+				return fmt.Errorf("compact: %w", err)
+			}
+			seccompData = buf.String()
 		}
 		return service(tail, serviceOpts{
 			configPath:  *configPath,

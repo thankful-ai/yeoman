@@ -39,7 +39,8 @@ type ServerOpts struct {
 func NewServer(ctx context.Context, opts ServerOpts) (*Server, error) {
 	supervisor := suture.New("server", suture.Spec{
 		EventHook: func(ev suture.Event) {
-			opts.Log.Error("event hook", errors.New(ev.String()))
+			opts.Log.Error("event hook",
+				slog.String("error", ev.String()))
 		},
 	})
 
