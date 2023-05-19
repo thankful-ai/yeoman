@@ -194,7 +194,7 @@ func (b *Bucket) get(ctx context.Context, name string) ([]byte, error) {
 	}
 	defer func() { _ = r.Close() }()
 
-	const maxBytes = 32 * 1024 // 32 KB
+	const maxBytes = 256 * 1024 // 256 KB
 	lr := io.LimitReader(r, maxBytes)
 	byt, err := io.ReadAll(lr)
 	if err != nil {
