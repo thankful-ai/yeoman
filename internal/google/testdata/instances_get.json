@@ -93,7 +93,7 @@
     "minCpuPlatform": "",
     "guestAccelerators": [
         {
-            "acceleratorType": "gpu-1",
+            "acceleratorType": "projects/my-project/zones/us-central1-c/acceleratorTypes/nvidia-tesla-p10",
             "acceleratorCount": 1
         }
     ],

@@ -99,6 +99,38 @@ func TestGetAllVMs(t *testing.T) {
 	}
 }
 
+func TestGetVM(t *testing.T) {
+	t.Parallel()
+	g, stub := newStub()
+	defer stub.Close()
+
+	want := yeoman.VM{
+		Name: "ym-vm-x-1",
+		IPs: yeoman.StaticVMIPs{
+			Internal: yeoman.IP{
+				Name:     "ym-ip-1",
+				AddrPort: netip.MustParseAddrPort("0.0.0.0:80"),
+			},
+			External: yeoman.IP{
+				Name:     "ym-ip-2",
+				AddrPort: netip.MustParseAddrPort("0.0.0.0:80"),
+			},
+		},
+		Disk:        100,
+		Tags:        []string{"tag1"},
+		MachineType: "type",
+		GPU:         &yeoman.GPU{Type: "gpu-1", Count: 1},
+	}
+
+	log := slog.Default()
+	vm, err := g.GetVM(context.Background(), log, "ym-vm-x-1")
+	check(t, err)
+
+	if diff := reflect.DeepEqual(want, vm); diff {
+		t.Fatal("unexpected result")
+	}
+}
+
 func TestCreateStaticIP(t *testing.T) {
 	t.Parallel()
 	g, stub := newStub()

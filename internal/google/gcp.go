@@ -104,7 +104,7 @@ func (g *GCP) GetVM(
 	if err != nil {
 		return zero, fmt.Errorf("do %s: %w", path, err)
 	}
-	var v *vm
+	v := &vm{}
 	if err := json.Unmarshal(byt, v); err != nil {
 		log.Warn(string(byt), slog.String("func", "GetVM"))
 		return zero, fmt.Errorf("unmarshal: %w", err)
