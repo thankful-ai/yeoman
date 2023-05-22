@@ -431,6 +431,7 @@ func (s *service) startupVMs(
 			ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 			defer cancel()
 
+			s.log.Debug("creating vm", slog.Any("vm", vm))
 			err := s.zone.vmStore.CreateVM(ctx, s.log, vm)
 			if err != nil {
 				return fmt.Errorf("create vm: %w", err)
