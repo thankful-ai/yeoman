@@ -159,6 +159,9 @@ runcmd:
 	var securityOpt string
 	if vm.Seccomp != "" {
 		securityOpt = "--security-opt seccomp=/etc/docker/seccomp/custom.json"
+		log.Debug("creating vm with custom security opt")
+	} else {
+		log.Debug("creating vm with default security opt")
 	}
 	googleVM.Metadata.Items[0].Value = fmt.Sprintf(cloudConfig,
 		g.registryName, securityOpt, g.registryPath, vm.ContainerImage,
