@@ -61,6 +61,9 @@ type VMStore interface {
 	// GetAllVMs on the cloud provider.
 	GetAllVMs(context.Context, *slog.Logger) ([]VM, error)
 
+	// GetVM by name on the cloud provider.
+	GetVM(context.Context, *slog.Logger, string) (VM, error)
+
 	// DeleteVM. The implementation should shutdown the VM properly prior
 	// to delete and hang until the box is completely deleted.
 	DeleteVM(ctx context.Context, log *slog.Logger, name string) error

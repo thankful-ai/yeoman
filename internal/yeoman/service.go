@@ -442,6 +442,17 @@ func (s *service) startupVMs(
 			ctx, deployCancel := context.WithCancelCause(ctx)
 			defer deployCancel(nil)
 
+			// If we don't have a static IP, the IP is unknown when
+			// we first create the VM, so we need to retrieve it
+			// before polling.
+			if !s.opts.StaticIP {
+				vm, err = s.zone.vmStore.GetVM(ctx, s.log,
+					vm.Name)
+				if err != nil {
+					return fmt.Errorf("get vm: %w", err)
+				}
+			}
+
 			err = s.pollUntilHealthy(ctx, vm, opts, deployCancel)
 			if err != nil {
 				return fmt.Errorf("poll until healthy: %w", err)
@@ -794,7 +805,7 @@ func (c *checker) Serve(ctx context.Context) error {
 
 		c.log.Info("starting adjustment",
 			slog.String("strategy", "startup"),
-			slog.String("reason", "too many vms"),
+			slog.String("reason", "not enough vms"),
 			slog.Int("want", opts.Count),
 			slog.Int("have", len(vms)))
 		toCreate := opts.Count - len(vms)

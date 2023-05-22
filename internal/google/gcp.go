@@ -93,6 +93,29 @@ func (g *GCP) GetAllVMs(
 	return vms, nil
 }
 
+func (g *GCP) GetVM(
+	ctx context.Context,
+	log *slog.Logger,
+	name string,
+) (yeoman.VM, error) {
+	var zero yeoman.VM
+	path := fmt.Sprintf("/instances/%s", name)
+	byt, err := g.do(ctx, log, http.MethodGet, path, nil)
+	if err != nil {
+		return zero, fmt.Errorf("do %s: %w", path, err)
+	}
+	var v *vm
+	if err := json.Unmarshal(byt, v); err != nil {
+		log.Warn(string(byt), slog.String("func", "GetVM"))
+		return zero, fmt.Errorf("unmarshal: %w", err)
+	}
+	vm, err := vmFromGoogle(v)
+	if err != nil {
+		return zero, fmt.Errorf("vm from google: %w", err)
+	}
+	return vm, nil
+}
+
 func (g *GCP) CreateVM(
 	ctx context.Context,
 	log *slog.Logger,
