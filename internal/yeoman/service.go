@@ -60,11 +60,6 @@ func changedMachine(o1, o2 ServiceOpts) *string {
 			o2.StaticIP)
 		return &s
 	}
-	if o1.Seccomp != o2.Seccomp {
-		s := fmt.Sprintf("new seccomp: %d->%d", len(o1.Seccomp),
-			len(o1.Seccomp))
-		return &s
-	}
 	return nil
 }
 
