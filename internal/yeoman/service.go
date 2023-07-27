@@ -887,9 +887,27 @@ func (c *checker) Serve(ctx context.Context) error {
 		if opts.Count >= len(vms) {
 			toStart := opts.Count - len(vms)
 
-			// If we have at most 1 VM, we need to startup the new
-			// box with a blue-green strategy before we can
-			// shutdown the old to reduce downtime.
+			// If we have a single box with a static IP, we need to
+			// accept downtime to preserve that IP. Typically this
+			// is for the reverse proxies in staging environments;
+			// we don't want those IP addresses shifting out from
+			// under us and requiring DNS changes on each deploy.
+			if len(vms) == 1 && opts.StaticIP {
+				c.log.Info("starting deploy",
+					slog.String("strategy", "restart in place"),
+					slog.String("reason", "have 1 vm with static ip"),
+					slog.Int("have", len(vms)),
+					slog.Int("want", opts.Count))
+				err := c.reboot(ctx, vms)
+				if err != nil {
+					return fmt.Errorf("reboot: %w", err)
+				}
+				return nil
+			}
+
+			// If there's 1 VM, we need to startup the new box with
+			// a blue-green strategy before we can shutdown the old
+			// to reduce downtime.
 			if len(vms) <= 1 {
 				c.log.Info("starting deploy",
 					slog.String("strategy", "blue-green"),
