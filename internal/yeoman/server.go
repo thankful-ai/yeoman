@@ -142,15 +142,10 @@ func (s *serviceScanner) Serve(ctx context.Context) error {
 		// future deploys. We must force this function to exit at the
 		// specified timeout.
 		//
-		// It is unclear why GetServices hangs sporadically. I've
-		// confirmed it's not a deadlock with its mutexes. I have
-		// modified the GCP bucket code to check ctx.Done() more
-		// frequently and limit the size of reads to narrow down the
-		// issue. I believe it may be due to using a shared HTTP
-		// Transport, so I have created new transports on every request
-		// to debug.
-		//
-		// TODO(egtann) identify the root cause.
+		// Eliminating shared transports seemed to eliminate this issue.
+		// The below code is maintained because we'd still prefer a leak
+		// here in the very rare case of a request hanging forever than
+		// the alternative which prevents all future deploys.
 		type result struct {
 			opts map[string]ServiceOpts
 			err  error
