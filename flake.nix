@@ -2,7 +2,7 @@
   description = "yeoman orchestrator";
 
   # Nixpkgs / NixOS version to use.
-  inputs.nixpkgs.url = "nixpkgs/nixos-unstable";
+  inputs.nixpkgs.url = "nixpkgs/nixos-23.05";
 
   outputs = { self, nixpkgs }:
     let
@@ -39,7 +39,7 @@
             # in the Nix store.
             src = ./.;
 
-            vendorSha256 = "sha256-y/6qOt+EMYDdCdPLyrdbxHRwa04seNEw44FR4wmXibA=";
+            vendorSha256 = "sha256-pNh/VcipZI3PK5D3kORkPGdrtafWOE/pTbupsdS+Hew=";
 
             preCheck = ''
               export NIX_BUILD="1"
