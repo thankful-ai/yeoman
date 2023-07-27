@@ -111,7 +111,9 @@ func initYeoman(args []string, configPath string, debug bool) error {
 	cmd := exec.Command("sh", "-c", fmt.Sprintf(`
 		mkdir -p /tmp/yeoman && \
 		cp %s /tmp/yeoman/ && \
-		CGO_ENABLED=0 go install -trimpath -ldflags='-w -s' \
+		CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go install \
+			-trimpath \
+			-ldflags='-w -s' \
 			github.com/thankful-ai/yeoman/cmd/server@latest && \
 		mv $(which server) /tmp/yeoman/yeoman`,
 		yeoman.ServerConfigName))
