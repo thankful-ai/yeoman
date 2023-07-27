@@ -111,11 +111,12 @@ func initYeoman(args []string, configPath string, debug bool) error {
 	cmd := exec.Command("sh", "-c", fmt.Sprintf(`
 		mkdir -p /tmp/yeoman && \
 		cp %s /tmp/yeoman/ && \
+		unset GOBIN && \
 		CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go install \
 			-trimpath \
 			-ldflags='-w -s' \
 			github.com/thankful-ai/yeoman/cmd/server@latest && \
-		mv $(which server) /tmp/yeoman/yeoman`,
+		mv $HOME/go/bin/linux_amd64/server /tmp/yeoman/yeoman`,
 		yeoman.ServerConfigName))
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
