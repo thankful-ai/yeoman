@@ -3,11 +3,11 @@ package yeoman
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
+	"sync"
 
-	"github.com/sasha-s/go-deadlock"
 	"github.com/thejerf/suture/v4"
-	"golang.org/x/exp/slog"
 )
 
 // providerRegion manages a single provider region, such as gcp:us-central1, and
@@ -22,7 +22,7 @@ type providerRegion struct {
 	// Multiple services creating IPs simultaneously results in conflicts.
 	// We need to lock access while fetching and creating IPs.
 	ipStore   IPStore
-	ipStoreMu deadlock.Mutex
+	ipStoreMu sync.Mutex
 
 	// supervisor to manage services.
 	supervisor *suture.Supervisor

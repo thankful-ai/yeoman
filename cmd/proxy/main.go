@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -17,7 +18,6 @@ import (
 	"github.com/thankful-ai/yeoman/internal/proxy"
 	"github.com/thankful-ai/yeoman/internal/yeoman"
 	"golang.org/x/crypto/acme/autocert"
-	"golang.org/x/exp/slog"
 )
 
 const timeout = 60 * time.Second

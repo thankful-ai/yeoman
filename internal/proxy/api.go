@@ -3,11 +3,10 @@ package proxy
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
-
-	"golang.org/x/exp/slog"
 )
 
 // RedirectHTTPHandler redirects http requests to use the API if the request

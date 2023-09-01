@@ -9,10 +9,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"cloud.google.com/go/storage"
-	"github.com/sasha-s/go-deadlock"
 	"github.com/thankful-ai/yeoman/internal/yeoman"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
@@ -24,7 +24,7 @@ var _ yeoman.ServiceStore = &Bucket{}
 
 type Bucket struct {
 	name string
-	mu   deadlock.RWMutex
+	mu   sync.RWMutex
 }
 
 func NewBucket(name string) *Bucket {
@@ -127,20 +127,23 @@ func httpClient(ctx context.Context) (*http.Client, error) {
 		return nil, fmt.Errorf("default client: %w", err)
 	}
 	client.Transport.(*oauth2.Transport).Base = &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
 		DialContext: (&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
+			Timeout:   10 * time.Second,
+			KeepAlive: 10 * time.Second,
 			DualStack: true,
 		}).DialContext,
-		MaxIdleConns:          100,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
+		DisableKeepAlives:   true,
+		ForceAttemptHTTP2:   true,
+		MaxIdleConns:        10,
+		MaxIdleConnsPerHost: -1,
+		Proxy:               http.ProxyFromEnvironment,
+
+		TLSHandshakeTimeout:   5 * time.Second,
+		ResponseHeaderTimeout: 5 * time.Second,
+		IdleConnTimeout:       5 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConnsPerHost:   -1,
-		DisableKeepAlives:     true,
 	}
+	client.Timeout = 10 * time.Second
 	return client, nil
 }
 

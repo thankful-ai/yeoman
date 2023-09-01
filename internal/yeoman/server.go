@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"sync"
 	"time"
 
-	"github.com/sasha-s/go-deadlock"
 	"github.com/thejerf/suture/v4"
-	"golang.org/x/exp/slog"
 )
 
 // Server tracks the state of services, manages autoscaling, and handles
@@ -18,7 +18,7 @@ type Server struct {
 	serviceStore ServiceStore
 
 	services   map[string]ServiceOpts
-	servicesMu deadlock.RWMutex
+	servicesMu sync.RWMutex
 
 	// TODO(egtann) revisit to make it possible to add providers after boot
 	// via the CLI?

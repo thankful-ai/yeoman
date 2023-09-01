@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -13,7 +14,6 @@ import (
 
 	"github.com/thankful-ai/yeoman/internal/google"
 	"github.com/thankful-ai/yeoman/internal/yeoman"
-	"golang.org/x/exp/slog"
 )
 
 func main() {

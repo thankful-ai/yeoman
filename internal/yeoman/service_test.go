@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -15,8 +16,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"golang.org/x/exp/slog"
 )
 
 var data = map[string][]byte{}

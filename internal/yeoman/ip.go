@@ -3,9 +3,8 @@ package yeoman
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/netip"
-
-	"golang.org/x/exp/slog"
 )
 
 type IP struct {

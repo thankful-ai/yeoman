@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -14,7 +15,6 @@ import (
 	"testing"
 
 	"github.com/thankful-ai/yeoman/internal/yeoman"
-	"golang.org/x/exp/slog"
 )
 
 var data = map[string][]byte{}

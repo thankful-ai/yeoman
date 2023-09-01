@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/url"
 	"os"
 	"os/exec"
@@ -25,7 +26,6 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
 	"github.com/thankful-ai/yeoman/internal/google"
 	"github.com/thankful-ai/yeoman/internal/yeoman"
-	"golang.org/x/exp/slog"
 )
 
 const (

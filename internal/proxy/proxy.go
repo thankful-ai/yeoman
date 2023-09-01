@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand"
 	"net"
 	"net/http"
@@ -18,7 +19,6 @@ import (
 	"github.com/sourcegraph/conc/pool"
 	"github.com/thankful-ai/yeoman/internal/yeoman"
 	"golang.org/x/crypto/acme/autocert"
-	"golang.org/x/exp/slog"
 )
 
 // ReverseProxy maps frontend hosts to backends. It will automatically check

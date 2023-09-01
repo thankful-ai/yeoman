@@ -3,13 +3,13 @@ package yeoman
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/sasha-s/go-deadlock"
 	"github.com/sourcegraph/conc/pool"
 	"github.com/thejerf/suture/v4"
-	"golang.org/x/exp/slog"
 )
 
 // zone manages a single zone, such as GCP, and all the services that
@@ -21,7 +21,7 @@ type zone struct {
 	providerRegion *providerRegion
 
 	vms   []vmState
-	vmsMu deadlock.RWMutex
+	vmsMu sync.RWMutex
 
 	// supervisor to manage services.
 	supervisor *suture.Supervisor

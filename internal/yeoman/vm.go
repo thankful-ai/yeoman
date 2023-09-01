@@ -3,8 +3,7 @@ package yeoman
 import (
 	"context"
 	"fmt"
-
-	"golang.org/x/exp/slog"
+	"log/slog"
 )
 
 type VM struct {
